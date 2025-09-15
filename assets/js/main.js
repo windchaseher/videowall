@@ -98,69 +98,80 @@
     return true;
   }
 
-  async function mobileSequentialLoadStrict() {
+  async function mobileSequentialLoadStrictNoLazy() {
     const frames = Array.from(document.querySelectorAll('.frame'));
+    const eagerCount = Math.min(2, frames.length);  // small eager burst so the page shows life
+    const loadTimeoutMs = 9500;                     // give iOS extra time
+    const interMountDelayMs = 340;                  // spacing between mounts
+    const maxRetries = 2;                           // retry per frame if stuck
 
-    // Mount a tiny eager burst WITHOUT lazy hint so we see something immediately
-    const eagerCount = Math.min(2, frames.length);
-    for (let i = 0; i < eagerCount; i++) {
-      // build src now (ensure URL builder is used upstream when setting frame.dataset.embed)
-      const f = frames[i];
-      if (f.dataset.mounted === '1') continue;
+    // Helper to mount one iframe WITHOUT loading="lazy"
+    function mountEager(frame) {
+      if (!frame || frame.dataset.mounted === '1') return false;
       const iframe = document.createElement('iframe');
-      iframe.src = f.dataset.embed;
+      iframe.src = frame.dataset.embed;
       iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-      // EAGER: don't set loading="lazy" for first two on mobile
+      // IMPORTANT: no loading="lazy" on mobile
       Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
-      f.style.position = 'relative';
-      f.appendChild(iframe);
-      f.dataset.mounted = '1';
-      // brief spacing
-      await new Promise(r => setTimeout(r, 250));
+      frame.style.position = 'relative';
+      frame.appendChild(iframe);
+      frame.dataset.mounted = '1';
+      return iframe;
     }
 
-    // Then strictly one-by-one with a comfortable delay between attempts
-    const loadTimeoutMs = 9000;       // slightly longer for iOS networks
-    const interMountDelayMs = 320;    // spacing to avoid handshake spikes
+    // Eager burst (2 clips) without lazy hint
+    for (let i = 0; i < eagerCount; i++) {
+      mountEager(frames[i]);
+      await new Promise(r => setTimeout(r, 220));
+    }
 
+    // Strictly one-by-one with retries; no lazy hint at all on mobile
     for (let i = eagerCount; i < frames.length; i++) {
       const f = frames[i];
-      if (f.dataset.mounted === '1') continue;
+      if (!f || f.dataset.mounted === '1') continue;
 
-      // Create with lazy hint for the rest
-      const iframe = document.createElement('iframe');
-      iframe.src = f.dataset.embed;
-      iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-      iframe.setAttribute('loading', 'lazy');
-      Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
-      f.style.position = 'relative';
-      f.appendChild(iframe);
-      f.dataset.mounted = '1';
+      let tries = 0;
+      let done = false;
+      while (!done && tries <= maxRetries) {
+        tries++;
+        // (Re)mount
+        // If an old iframe exists, remove it first
+        const old = f.querySelector('iframe');
+        if (old) try { old.remove(); } catch {}
+        f.dataset.mounted = '0';
+        const ifr = mountEager(f);
 
-      // Wait for load OR timeout, then small delay
-      await new Promise((resolve) => {
-        let settled = false;
-        const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, loadTimeoutMs);
-        iframe.addEventListener('load', () => {
-          if (!settled) { clearTimeout(t); settled = true; }
-          resolve();
-        }, { once: true });
-      });
+        await new Promise((resolve) => {
+          let settled = false;
+          const t = setTimeout(() => { if (!settled) { settled = true; resolve(false); } }, loadTimeoutMs);
+          if (ifr) {
+            ifr.addEventListener('load', () => {
+              if (!settled) { clearTimeout(t); settled = true; }
+              resolve(true);
+            }, { once: true });
+          } else {
+            clearTimeout(t); resolve(false);
+          }
+        }).then(ok => { done = ok; });
 
-      await new Promise(r => setTimeout(r, interMountDelayMs));
+        // small spacing before next attempt or next frame
+        await new Promise(r => setTimeout(r, interMountDelayMs + (tries * 60)));
+      }
     }
 
-    // Final sweep after 12s: if anything still missed, attach eagerly
+    // Aggressive final sweep after 12s: eagerly attach to any frame that still missed
     setTimeout(() => {
-      const left = Array.from(document.querySelectorAll('.frame')).filter(f => f.dataset.mounted !== '1');
-      left.forEach(f => {
+      const left = Array.from(document.querySelectorAll('.frame')).filter(fr => fr.dataset.mounted !== '1');
+      left.forEach(fr => {
+        const prev = fr.querySelector('iframe');
+        if (prev) try { prev.remove(); } catch {}
         const el = document.createElement('iframe');
-        el.src = f.dataset.embed;
+        el.src = fr.dataset.embed;
         el.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
         Object.assign(el.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
-        f.style.position = 'relative';
-        f.appendChild(el);
-        f.dataset.mounted = '1';
+        fr.style.position = 'relative';
+        fr.appendChild(el);
+        fr.dataset.mounted = '1';
       });
     }, 12000);
   }
@@ -232,7 +243,7 @@
 
   // Entry point: choose loader per device
   if (isSmall) {
-    mobileSequentialLoadStrict();
+    mobileSequentialLoadStrictNoLazy();
   } else {
     desktopHeartbeatLoad();
   }
