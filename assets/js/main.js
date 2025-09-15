@@ -38,6 +38,7 @@
   const clips = manifest.clips.map((c, i) => {
     const wrap = document.createElement('section');
     wrap.className = 'clip';
+    wrap.dataset.title = (c.title || '');
     let ov = (typeof c.overlap === 'number' ? c.overlap : -10);
     ov = Math.max(isSmall ? -8 : -12, Math.min(isSmall ? -4 : -6, ov));
     if (i > 0) wrap.style.marginTop = `${ov}px`;
@@ -137,22 +138,43 @@
     return true;
   }
 
-  // --- Vimeo player registry for freeze detection (no pausing) ---
-  const players = []; // entries: { el, player, lastTime, lastUpdate }
-
+  // --- FreezeGuard registry (MOBILE ONLY) ---
+  const players = []; // { el, player, lastTime, lastUpdate, freezeHits, title }
   function registerPlayer(iframeEl) {
+    if (!isSmall) return; // mobile only
     if (!window.Vimeo || !window.Vimeo.Player) return;
     try {
       const p = new Vimeo.Player(iframeEl);
-      const rec = { el: iframeEl, player: p, lastTime: 0, lastUpdate: performance.now() };
+      const clipEl = iframeEl.closest('.clip');
+      const title = (clipEl && clipEl.dataset && clipEl.dataset.title) ? clipEl.dataset.title : '';
+      const rec = { el: iframeEl, player: p, lastTime: 0, lastUpdate: performance.now(), freezeHits: 0, title };
       players.push(rec);
-
       p.on('timeupdate', (data) => {
         rec.lastTime   = (data && typeof data.seconds === 'number') ? data.seconds : rec.lastTime;
         rec.lastUpdate = performance.now();
+        rec.freezeHits = 0; // reset when progressing
       });
-    } catch (_) { /* ignore */ }
+    } catch(_) {}
   }
+
+  const PROBLEM_TITLES = new Set([
+    'Hybrid — CU',
+    'Hybrid — Field',
+    'Hybrid — Sky',
+    'Hybrid — House',
+    'TEW — Twist',
+    'TEW — CU',
+    'TEW — Pull',
+    'Jump — Push In',
+    'Jump — Whip Pan',
+    'Jump — Oner',
+    'Jump — Joyrider',
+    'Jump — Lineup',
+    'Journey — Beach',
+    'Journey — Cliff',
+    'Journey — Piano',
+    'Journey — Whale'
+  ]);
 
 
   // --- DESKTOP: rAF heartbeat loader (parallel + staggered), unchanged behavior ---
@@ -390,34 +412,141 @@
     window.addEventListener(ev, startAudioOnce, { once: true, passive: true })
   );
 
-  // --- Freeze nudge only (no pausing) ---
-  const FREEZE_CHECK_MS = 1200;   // how often to check
-  const FREEZE_WINDOW_MS = 3000;  // if no timeupdate for this long, consider frozen
-  const NUDGE_SECS = 0.06;        // small seek forward (video remains seamless)
+  // --- FreezeGuard (stall detection + nudge + API recovery + last-resort remount). MOBILE ONLY ---
+  if (isSmall) {
+    // Tunables (safe defaults)
+    const BASE_FREEZE_WINDOW_MS = 2000;
+    const BASE_NUDGE_SECS       = 0.08;
+    const BASE_NUDGE_CAP_SECS   = 0.20;
 
-  async function nudgeFrozenPlayers() {
-    if (!players.length) return;
-    const now = performance.now();
+    const STRONG_FREEZE_WINDOW_MS = 1500; // for problem clips
+    const STRONG_NUDGE_SECS       = 0.12;
+    const STRONG_NUDGE_CAP_SECS   = 0.25;
 
-    for (const rec of players) {
-      // skip if element removed
-      if (!rec.el || !rec.el.isConnected) continue;
-      // frozen = timeupdate hasn't advanced in a while
-      if (now - rec.lastUpdate > FREEZE_WINDOW_MS) {
-        try {
-          const cur = await rec.player.getCurrentTime().catch(() => null);
-          if (typeof cur === 'number') {
-            await rec.player.setCurrentTime(Math.max(0, cur + NUDGE_SECS)).catch(() => {});
-            await rec.player.play().catch(() => {}); // reassert play
-          } else {
-            // Fall back: just try play
-            await rec.player.play().catch(() => {});
-          }
-        } catch (_) { /* ignore one-off errors */ }
+    const CHECK_MS               = 900;  // how often to check for stalls
+    const BACKOFF_MS             = 600;  // brief wait after each nudge
+    const API_RETRIES            = 2;    // API recovery attempts per stall episode
+    const HARD_REMOUNT_AFTER_HITS = 3;   // if repeated nudges fail, remount iframe
+
+    async function apiRecover(rec) {
+      try {
+        await rec.player.play().catch(()=>{});
+        await new Promise(r => setTimeout(r, 300));
+        const t1 = await rec.player.getCurrentTime().catch(()=>null);
+        await new Promise(r => setTimeout(r, 300));
+        const t2 = await rec.player.getCurrentTime().catch(()=>null);
+        if (typeof t1 === 'number' && typeof t2 === 'number' && t2 > t1 + 0.01) return true;
+
+        await rec.player.unload().catch(()=>{});
+        await new Promise(r => setTimeout(r, 200));
+        await rec.player.play().catch(()=>{});
+        await new Promise(r => setTimeout(r, 500));
+        return true;
+      } catch { return false; }
+    }
+
+    function hardRemount(rec) {
+      const frame = rec.el && rec.el.parentElement;
+      if (!frame) return false;
+      try { rec.el.remove(); } catch {}
+      const src = frame.dataset.embed; if (!src) return false;
+      const ifr = document.createElement('iframe');
+      ifr.src = src;
+      ifr.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+      Object.assign(ifr.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+      frame.style.position = 'relative';
+      frame.appendChild(ifr);
+      frame.dataset.mounted = '1';
+      registerPlayer(ifr);
+      return true;
+    }
+
+    async function nudgeOne(rec) {
+      const strong = PROBLEM_TITLES.has(rec.title);
+      const windowMs = strong ? STRONG_FREEZE_WINDOW_MS : BASE_FREEZE_WINDOW_MS;
+      const baseStep = strong ? STRONG_NUDGE_SECS       : BASE_NUDGE_SECS;
+      const capStep  = strong ? STRONG_NUDGE_CAP_SECS   : BASE_NUDGE_CAP_SECS;
+
+      const now = performance.now();
+      if (now - rec.lastUpdate <= windowMs) return; // not frozen
+
+      const step = Math.min(capStep, baseStep + rec.freezeHits * 0.04);
+      try {
+        const cur = await rec.player.getCurrentTime().catch(()=>null);
+        if (typeof cur === 'number') {
+          const jitter = Math.random() * 0.02;
+          await rec.player.setCurrentTime(Math.max(0, cur + step + jitter)).catch(()=>{});
+        }
+        await rec.player.play().catch(()=>{});
+      } catch {}
+
+      rec.freezeHits++;
+      await new Promise(r => setTimeout(r, BACKOFF_MS));
+
+      if (rec.freezeHits === 2) {
+        let ok = false;
+        for (let i = 0; i < API_RETRIES && !ok; i++) ok = await apiRecover(rec);
+      }
+      if (rec.freezeHits >= HARD_REMOUNT_AFTER_HITS) {
+        hardRemount(rec);
+        rec.freezeHits = 0;
       }
     }
+
+    function FreezeGuardTick() {
+      if (!players.length) return;
+      players.forEach(rec => {
+        if (!rec.el || !rec.el.isConnected) return;
+        nudgeOne(rec);
+      });
+    }
+
+    if (!window.__FreezeGuardTimer) {
+      window.__FreezeGuardTimer = setInterval(FreezeGuardTick, CHECK_MS);
+    }
   }
+
+  // --- MountGuard (handles truly missing/never-mounted iframes). MOBILE ONLY ---
   if (isSmall) {
-    setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);
+    // Tunables for mount assurance
+    const MOUNT_CHECK_MS    = 2000;  // re-check cadence for missing iframes
+    const MOUNT_START_DELAY = 4000;  // wait a bit for normal loader to do its job
+    const MOUNT_DEADLINE_MS = 20000; // after this, aggressively attach any remaining
+
+    function mountIfMissing(frame) {
+      if (!frame) return;
+      if (frame.querySelector('iframe')) return; // already mounted
+      const src = frame.dataset.embed; if (!src) return;
+      const ifr = document.createElement('iframe');
+      ifr.src = src;
+      ifr.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+      // no loading="lazy" on mobile for reliability
+      Object.assign(ifr.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+      frame.style.position = 'relative';
+      frame.appendChild(ifr);
+      frame.dataset.mounted = '1';
+      registerPlayer(ifr);
+    }
+
+    // Periodic assurance pass (lightweight)
+    function MountGuardTick() {
+      document.querySelectorAll('.frame').forEach(frame => {
+        mountIfMissing(frame);
+      });
+    }
+
+    // Start after a short delay, then repeat periodically
+    setTimeout(() => {
+      if (!window.__MountGuardTimer) {
+        window.__MountGuardTimer = setInterval(MountGuardTick, MOUNT_CHECK_MS);
+      }
+    }, MOUNT_START_DELAY);
+
+    // Aggressive deadline sweep: ensure absolutely everything has an iframe
+    setTimeout(() => {
+      document.querySelectorAll('.frame').forEach(frame => {
+        mountIfMissing(frame);
+      });
+    }, MOUNT_DEADLINE_MS);
   }
 })();
