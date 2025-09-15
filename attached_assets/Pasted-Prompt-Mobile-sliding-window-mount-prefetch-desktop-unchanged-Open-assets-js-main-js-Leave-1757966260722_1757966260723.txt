@@ -1,0 +1,101 @@
+Prompt — Mobile “sliding window” mount + prefetch (desktop unchanged)
+Open /assets/js/main.js. Leave DESKTOP logic, parallax, overlap, watermark, audio, and Vimeo URL builder unchanged.
+
+Goal: On MOBILE ONLY, mount iframes for a small window around the viewport and unmount distant ones. Prefetch a couple ahead. Keep freeze-nudge.
+
+1) Ensure the device flag exists near the top:
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+2) After your render loop (frames created with frame.dataset.embed set), add utilities:
+
+const frames = Array.from(document.querySelectorAll('.frame'));
+function mountIframeEager(frame) {
+  if (!frame || frame.dataset.mounted === '1') return false;
+  const src = frame.dataset.embed; if (!src) return false;
+
+  const iframe = document.createElement('iframe');
+  iframe.src = src;
+  iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+  // no loading="lazy" on mobile for reliability
+  Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+  frame.style.position = 'relative';
+  frame.appendChild(iframe);
+  frame.dataset.mounted = '1';
+
+  // If you have registerPlayer(iframe) for freeze-nudge, call it here ONLY on mobile
+  if (typeof registerPlayer === 'function' && isSmall) { registerPlayer(iframe); }
+
+  return true;
+}
+function unmountIframe(frame) {
+  if (!frame || frame.dataset.mounted !== '1') return;
+  const ifr = frame.querySelector('iframe');
+  if (ifr) try { ifr.remove(); } catch {}
+  frame.dataset.mounted = '0';
+}
+
+function clipIndexFor(el) { return frames.indexOf(el); }
+function nearestIndexToViewportCenter() {
+  let best = 0, bestD = Infinity;
+  const vhc = window.innerHeight / 2;
+  frames.forEach((f, i) => {
+    const r = f.getBoundingClientRect();
+    const c = r.top + r.height / 2;
+    const d = Math.abs(c - vhc);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+}
+
+3) MOBILE sliding window controller (mount current±window, prefetch ahead):
+if (isSmall) {
+  const WINDOW_BEHIND = 1;  // keep 1 before
+  const WINDOW_AHEAD  = 2;  // keep 2 after in view
+  const PREFETCH_AHEAD = 2; // additionally pre-mount 2 further ahead
+  const UPDATE_MS = 350;    // how often to re-evaluate window
+
+  // Eagerly mount the very first few so the page shows life
+  for (let i = 0; i < Math.min(2, frames.length); i++) mountIframeEager(frames[i]);
+
+  function updateWindow() {
+    const center = nearestIndexToViewportCenter();
+
+    const keepStart = Math.max(0, center - WINDOW_BEHIND);
+    const keepEnd   = Math.min(frames.length - 1, center + WINDOW_AHEAD);
+
+    // Prefetch a couple further ahead to avoid visible delays
+    const preEnd = Math.min(frames.length - 1, keepEnd + PREFETCH_AHEAD);
+
+    // Mount the window + prefetch range
+    for (let i = keepStart; i <= preEnd; i++) {
+      if (frames[i].dataset.mounted !== '1') mountIframeEager(frames[i]);
+    }
+
+    // Unmount far outside window to free decoders
+    for (let i = 0; i < frames.length; i++) {
+      if (i < keepStart - 1 || i > preEnd + 1) { // leave a tiny buffer
+        if (frames[i].dataset.mounted === '1') unmountIframe(frames[i]);
+      }
+    }
+  }
+
+  // Run on an interval (scroll-independent) + also on scroll/resize to re-center window
+  const timer = setInterval(updateWindow, UPDATE_MS);
+  window.addEventListener('scroll', updateWindow, { passive: true });
+  window.addEventListener('resize', updateWindow);
+  window.addEventListener('load', updateWindow);
+  updateWindow();
+
+  // Keep your existing FREEZE-NUDGE loop active on mobile.
+}
+
+4) DESKTOP: keep your current loader exactly as-is. Do NOT add any unmounting on desktop.
+
+After changes, verify on an iPhone in the EXTERNAL preview:
+- As you wait a few seconds without scrolling, the first couple mount and play.
+- When you scroll, the next few are already mounted (prefetched) and play without black frames.
+- Distant clips are unmounted (freeing Safari’s budget), reducing freezes across TEW / Jump clips.
+- Hybrid_CU should no longer freeze mid-clip; if it does, the freeze-nudge should revive it within ~2–3s.
+
+Reply only with:
+"STEP DONE — mobile sliding-window mount applied and verified"

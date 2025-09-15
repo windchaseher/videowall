@@ -62,6 +62,44 @@
   // -------- DESKTOP: keep rAF heartbeat loader --------
   const frames = Array.from(document.querySelectorAll('.frame'));
 
+  function mountIframeEager(frame) {
+    if (!frame || frame.dataset.mounted === '1') return false;
+    const src = frame.dataset.embed; if (!src) return false;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = src;
+    iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    // no loading="lazy" on mobile for reliability
+    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+    frame.style.position = 'relative';
+    frame.appendChild(iframe);
+    frame.dataset.mounted = '1';
+
+    // If you have registerPlayer(iframe) for freeze-nudge, call it here ONLY on mobile
+    if (typeof registerPlayer === 'function' && isSmall) { registerPlayer(iframe); }
+
+    return true;
+  }
+  function unmountIframe(frame) {
+    if (!frame || frame.dataset.mounted !== '1') return;
+    const ifr = frame.querySelector('iframe');
+    if (ifr) try { ifr.remove(); } catch {}
+    frame.dataset.mounted = '0';
+  }
+
+  function clipIndexFor(el) { return frames.indexOf(el); }
+  function nearestIndexToViewportCenter() {
+    let best = 0, bestD = Infinity;
+    const vhc = window.innerHeight / 2;
+    frames.forEach((f, i) => {
+      const r = f.getBoundingClientRect();
+      const c = r.top + r.height / 2;
+      const d = Math.abs(c - vhc);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
   const desktopConfig = {
     initialBurstCount: 12,
     batchSize: 5,
@@ -116,85 +154,6 @@
     } catch (_) { /* ignore */ }
   }
 
-  async function mobileSequentialLoadStrictNoLazy() {
-    const frames = Array.from(document.querySelectorAll('.frame'));
-    const eagerCount = Math.min(2, frames.length);  // small eager burst so the page shows life
-    const loadTimeoutMs = 9500;                     // give iOS extra time
-    const interMountDelayMs = 340;                  // spacing between mounts
-    const maxRetries = 2;                           // retry per frame if stuck
-
-    // Helper to mount one iframe WITHOUT loading="lazy"
-    function mountEager(frame) {
-      if (!frame || frame.dataset.mounted === '1') return false;
-      const iframe = document.createElement('iframe');
-      iframe.src = frame.dataset.embed;
-      iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-      // IMPORTANT: no loading="lazy" on mobile
-      Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
-      frame.style.position = 'relative';
-      frame.appendChild(iframe);
-      frame.dataset.mounted = '1';
-      if (isSmall) { registerPlayer(iframe); }
-      return iframe;
-    }
-
-    // Eager burst (2 clips) without lazy hint
-    for (let i = 0; i < eagerCount; i++) {
-      mountEager(frames[i]);
-      await new Promise(r => setTimeout(r, 220));
-    }
-
-    // Strictly one-by-one with retries; no lazy hint at all on mobile
-    for (let i = eagerCount; i < frames.length; i++) {
-      const f = frames[i];
-      if (!f || f.dataset.mounted === '1') continue;
-
-      let tries = 0;
-      let done = false;
-      while (!done && tries <= maxRetries) {
-        tries++;
-        // (Re)mount
-        // If an old iframe exists, remove it first
-        const old = f.querySelector('iframe');
-        if (old) try { old.remove(); } catch {}
-        f.dataset.mounted = '0';
-        const ifr = mountEager(f);
-
-        await new Promise((resolve) => {
-          let settled = false;
-          const t = setTimeout(() => { if (!settled) { settled = true; resolve(false); } }, loadTimeoutMs);
-          if (ifr) {
-            ifr.addEventListener('load', () => {
-              if (!settled) { clearTimeout(t); settled = true; }
-              resolve(true);
-            }, { once: true });
-          } else {
-            clearTimeout(t); resolve(false);
-          }
-        }).then(ok => { done = ok; });
-
-        // small spacing before next attempt or next frame
-        await new Promise(r => setTimeout(r, interMountDelayMs + (tries * 60)));
-      }
-    }
-
-    // Aggressive final sweep after 12s: eagerly attach to any frame that still missed
-    setTimeout(() => {
-      const left = Array.from(document.querySelectorAll('.frame')).filter(fr => fr.dataset.mounted !== '1');
-      left.forEach(fr => {
-        const prev = fr.querySelector('iframe');
-        if (prev) try { prev.remove(); } catch {}
-        const el = document.createElement('iframe');
-        el.src = fr.dataset.embed;
-        el.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-        Object.assign(el.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
-        fr.style.position = 'relative';
-        fr.appendChild(el);
-        fr.dataset.mounted = '1';
-        if (isSmall) { registerPlayer(el); }
-      });
-    }, 12000);
-  }
 
   // --- DESKTOP: rAF heartbeat loader (parallel + staggered), unchanged behavior ---
   function desktopHeartbeatLoad() {
@@ -267,7 +226,44 @@
 
   // Entry point: choose loader per device
   if (isSmall) {
-    mobileSequentialLoadStrictNoLazy();
+    const WINDOW_BEHIND = 1;  // keep 1 before
+    const WINDOW_AHEAD  = 2;  // keep 2 after in view
+    const PREFETCH_AHEAD = 2; // additionally pre-mount 2 further ahead
+    const UPDATE_MS = 350;    // how often to re-evaluate window
+
+    // Eagerly mount the very first few so the page shows life
+    for (let i = 0; i < Math.min(2, frames.length); i++) mountIframeEager(frames[i]);
+
+    function updateWindow() {
+      const center = nearestIndexToViewportCenter();
+
+      const keepStart = Math.max(0, center - WINDOW_BEHIND);
+      const keepEnd   = Math.min(frames.length - 1, center + WINDOW_AHEAD);
+
+      // Prefetch a couple further ahead to avoid visible delays
+      const preEnd = Math.min(frames.length - 1, keepEnd + PREFETCH_AHEAD);
+
+      // Mount the window + prefetch range
+      for (let i = keepStart; i <= preEnd; i++) {
+        if (frames[i].dataset.mounted !== '1') mountIframeEager(frames[i]);
+      }
+
+      // Unmount far outside window to free decoders
+      for (let i = 0; i < frames.length; i++) {
+        if (i < keepStart - 1 || i > preEnd + 1) { // leave a tiny buffer
+          if (frames[i].dataset.mounted === '1') unmountIframe(frames[i]);
+        }
+      }
+    }
+
+    // Run on an interval (scroll-independent) + also on scroll/resize to re-center window
+    const timer = setInterval(updateWindow, UPDATE_MS);
+    window.addEventListener('scroll', updateWindow, { passive: true });
+    window.addEventListener('resize', updateWindow);
+    window.addEventListener('load', updateWindow);
+    updateWindow();
+
+    // Keep your existing FREEZE-NUDGE loop active on mobile.
   } else {
     desktopHeartbeatLoad();
   }
