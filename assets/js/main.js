@@ -53,35 +53,36 @@
     return wrap;
   });
 
-  // ---- SCROLL-INDEPENDENT STAGGERED LOADER ----
+  // ---- rAF HEARTBEAT STAGGERED LOADER (NO SCROLL DEPENDENCY) ----
   const frames = Array.from(document.querySelectorAll('.frame'));
 
-  // Tunables (you can tweak later if needed)
-  const initialBurstCount   = isSmall ? 6 : 8;   // mount these immediately
-  const batchSize           = isSmall ? 3 : 4;   // mount this many per tick
-  const tickMs              = 700;               // time between ticks
-  const maxConcurrentLoads  = isSmall ? 3 : 10;  // simultaneous iframes allowed
-  const loadTimeoutMs       = 7000;              // consider a load "settled" after this
+  // Device-tuned knobs (feel free to tweak later)
+  const initialBurstCount   = isSmall ? 4  : 12;  // eager upfront
+  const batchSize           = isSmall ? 3  : 5;   // per heartbeat
+  const maxConcurrentLoads  = isSmall ? 3  : 12;  // simultaneous loads cap
+  const loadTimeoutMs       = 7000;               // settle even if 'load' never fires
+  const heartbeatMs         = 80;                 // rAF cadence
+  const watchdogMs          = 1500;               // backup timer if rAF throttled
+  const finalSweepMs        = 12000;              // force-mount leftover after this
+  const jitterMs            = isSmall ? 40 : 20;  // tiny random delay to avoid bursts aligning
 
   let inFlight = 0;
-  let nextIndex = initialBurstCount;
-  let batchTimer = null;
+  let nextIndex = 0;
+  let lastBeat = 0;
 
-  function mountIframe(frame) {
+  // Mount one frame (optionally eager = no lazy hint)
+  function mountIframe(frame, eager = false) {
     if (!frame || frame.dataset.mounted === '1') return;
-    const src = frame.dataset.embed;
-    if (!src) return;
-    if (inFlight >= maxConcurrentLoads) return; // caller will try later
+    const src = frame.dataset.embed; if (!src) return;
+    if (inFlight >= maxConcurrentLoads) return;
 
     inFlight++;
 
     const iframe = document.createElement('iframe');
     iframe.src = src;
     iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-    iframe.setAttribute('loading', 'lazy');
-    Object.assign(iframe.style, {
-      border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
-    });
+    if (!eager) iframe.setAttribute('loading', 'lazy');
+    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
 
     frame.style.position = 'relative';
     frame.appendChild(iframe);
@@ -93,55 +94,61 @@
       settled = true;
       inFlight = Math.max(0, inFlight - 1);
     };
-
     const t = setTimeout(settle, loadTimeoutMs);
     iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
   }
 
-  // 0) Eager burst (top-of-page feels instant)
-  frames.slice(0, initialBurstCount).forEach(f => mountIframe(f));
+  // 0) Eager burst (desktop strong, mobile lighter)
+  for (let i = 0; i < Math.min(initialBurstCount, frames.length); i++) {
+    mountIframe(frames[i], /* eager */ true);
+  }
+  nextIndex = initialBurstCount;
 
-  // 1) Scroll-independent batches (keeps loading even if user doesn't scroll)
-  function loadNextBatch() {
-    if (nextIndex >= frames.length) {
-      if (batchTimer) { clearInterval(batchTimer); batchTimer = null; }
-      return;
+  // 1) rAF heartbeat: keeps loading even if user never scrolls
+  function beat(ts) {
+    if (!lastBeat || (ts - lastBeat) >= heartbeatMs) {
+      lastBeat = ts;
+      let mountedThisBeat = 0;
+      while (mountedThisBeat < batchSize && nextIndex < frames.length) {
+        const f = frames[nextIndex];
+        const before = inFlight;
+        // add a tiny jitter to smooth spikes
+        const delay = Math.random() * jitterMs;
+        setTimeout(() => mountIframe(f), delay);
+        // Count it only if we actually started (checked next tick)
+        // We optimistically advance the index to keep cadence
+        mountedThisBeat++;
+        nextIndex++;
+      }
     }
+    if (nextIndex < frames.length) requestAnimationFrame(beat);
+  }
+  requestAnimationFrame(beat);
+
+  // 2) Watchdog: fires batches even if rAF is throttled (iOS background/tab)
+  function tickWatchdog() {
+    if (nextIndex >= frames.length) { clearInterval(watchdog); return; }
     let mountedThisTick = 0;
-    while (mountedThisTick < batchSize && nextIndex < frames.length) {
-      const f = frames[nextIndex];
+    while (mountedThisTick < Math.max(1, Math.floor(batchSize / 2)) && nextIndex < frames.length) {
       const before = inFlight;
-      mountIframe(f);
+      mountIframe(frames[nextIndex]);
       if (inFlight > before) { mountedThisTick++; nextIndex++; }
-      else break; // concurrency full; try again next tick
+      else break;
     }
   }
-  if (!batchTimer) batchTimer = setInterval(loadNextBatch, tickMs);
+  const watchdog = setInterval(tickWatchdog, watchdogMs);
 
-  // 2) Idle warming (also independent of scroll)
-  function scheduleWarm() {
-    if ('requestIdleCallback' in window) {
-      requestIdleCallback(() => loadNextBatch(), { timeout: tickMs });
-    } else {
-      setTimeout(loadNextBatch, tickMs);
-    }
-  }
-  window.addEventListener('load', scheduleWarm);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) scheduleWarm(); // resume warming when tab becomes active
-  });
-
-  // 3) Last-resort safety: force-mount anything left after ~12s
+  // 3) Final sweep: ensure nothing is stranded after N seconds
   setTimeout(() => {
     for (let i = 0; i < frames.length; i++) {
       if (frames[i].dataset.mounted !== '1') {
         const before = inFlight;
         mountIframe(frames[i]);
         if (inFlight === before) {
+          // last resort: attach even if over concurrency cap
           const iframe = document.createElement('iframe');
           iframe.src = frames[i].dataset.embed;
           iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-          iframe.setAttribute('loading', 'lazy');
           Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
           frames[i].style.position = 'relative';
           frames[i].appendChild(iframe);
@@ -149,9 +156,9 @@
         }
       }
     }
-  }, 12000);
+  }, finalSweepMs);
 
-  // Optional console diagnostic
+  // Optional console helper for you
   window.reportVimeoMounts = () => {
     const total = frames.length;
     const mounted = frames.filter(f => f.dataset.mounted === '1').length;
