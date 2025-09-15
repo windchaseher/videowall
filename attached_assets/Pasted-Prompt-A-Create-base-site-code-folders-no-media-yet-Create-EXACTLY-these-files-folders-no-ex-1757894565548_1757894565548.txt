@@ -1,0 +1,183 @@
+Prompt A — Create base site (code + folders; no media yet)
+Create EXACTLY these files/folders (no extras):
+
+/index.html
+/assets/css/styles.css
+/assets/js/main.js
+/assets/js/manifest.json
+/assets/audio/        (folder only)
+
+Put this into /index.html:
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Light Hair — Reel</title>
+  <link rel="stylesheet" href="./assets/css/styles.css">
+</head>
+<body>
+  <main id="reel" aria-label="reel"></main>
+  <div id="watermark">©lighthair</div>
+  <script src="./assets/js/main.js" defer></script>
+</body>
+</html>
+
+Put this into /assets/css/styles.css:
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #000; overflow-x: hidden; }
+#reel { display: block; width: 100vw; margin: 0; padding: 0; }
+.clip { display: block; position: relative; will-change: transform; margin: 0; }
+.clip .frame {
+  position: relative;
+  width: 100vw;
+  aspect-ratio: 16 / 9;      /* default true aspect ratio */
+  background: #000;
+  pointer-events: none;       /* keep non-interactive */
+}
+.clip .frame iframe {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 0;
+  pointer-events: none;       /* no HUD/controls interaction */
+}
+#watermark {
+  position: fixed; right: 14px; bottom: 10px;
+  opacity: .45; color: #fff;
+  font: 500 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  letter-spacing: .02em;
+  user-select: none; pointer-events: none; z-index: 9999;
+}
+
+Put this into /assets/js/main.js:
+
+(async function () {
+  'use strict';
+
+  // Helper to enforce Vimeo params while preserving any existing ones
+  function buildVimeoUrl(base) {
+    try {
+      const url = new URL(base);
+      const p = url.searchParams;
+      p.set('autoplay', '1');
+      p.set('muted', '1');
+      p.set('loop', '1');
+      p.set('background', '1'); // hides controls + enforces autoplay/mute/loop
+      url.search = p.toString();
+      return url.toString();
+    } catch {
+      const sep = base.includes('?') ? '&' : '?';
+      return base + sep + 'autoplay=1&muted=1&loop=1&background=1';
+    }
+  }
+
+  // Load manifest with cache-bust
+  let manifest;
+  try {
+    const res = await fetch(`./assets/js/manifest.json?ts=${Date.now()}`, { cache: 'no-store' });
+    manifest = await res.json();
+    if (!manifest || !Array.isArray(manifest.clips)) return;
+  } catch (_) { return; }
+
+  const reel = document.getElementById('reel');
+  reel.innerHTML = '';
+
+  // Build DOM from manifest
+  const clips = manifest.clips.map((c, i) => {
+    const wrap = document.createElement('section');
+    wrap.className = 'clip';
+    if (typeof c.overlap === 'number' && i > 0) wrap.style.marginTop = `${c.overlap}px`;
+    wrap.dataset.speed = String(c.parallax || 0);
+
+    const frame = document.createElement('div');
+    frame.className = 'frame';
+    if (c.aspect && typeof c.aspect === 'number') frame.style.aspectRatio = `${c.aspect} / 1`;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = buildVimeoUrl(c.embedUrl);
+    iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    iframe.setAttribute('title', c.title || 'video');
+
+    frame.appendChild(iframe);
+    wrap.appendChild(frame);
+    reel.appendChild(wrap);
+    return wrap;
+  });
+
+  // Subtle per-clip parallax
+  let ticking = false;
+  function applyParallax() {
+    const y = window.scrollY || 0;
+    for (const el of clips) {
+      const s = parseFloat(el.dataset.speed || '0') || 0;
+      if (s !== 0) el.style.transform = `translateY(${y * s}px)`;
+    }
+    ticking = false;
+  }
+  window.addEventListener('scroll', () => {
+    if (!ticking) { ticking = true; requestAnimationFrame(applyParallax); }
+  }, { passive: true });
+  applyParallax();
+
+  // Background audio: robust click-to-start
+  let audioStarted = false, audio;
+  function ensureAudio() {
+    if (!audio) {
+      audio = new Audio('./assets/audio/bg.mp3');
+      audio.loop = true;
+      audio.preload = 'auto';
+      audio.volume = 1.0;
+    }
+    return audio;
+  }
+  async function startAudioOnce() {
+    if (audioStarted) return;
+    audioStarted = true;
+    const a = ensureAudio();
+    try { await a.play(); }
+    catch { try { a.load(); setTimeout(() => a.play().catch(()=>{}), 60); } catch {}
+    }
+  }
+  ['click','pointerdown','touchstart','keydown'].forEach(ev =>
+    window.addEventListener(ev, startAudioOnce, { once: true, passive: true })
+  );
+})();
+
+Put this into /assets/js/manifest.json (uses my real Vimeo order/links; parallax/overlap preset subtly):
+
+{
+  "clips": [
+    { "title": "Hybrid — CU",          "embedUrl": "https://player.vimeo.com/video/1118451956", "parallax": 0.12, "overlap": -24 },
+    { "title": "Hybrid — Field",       "embedUrl": "https://player.vimeo.com/video/1118451957", "parallax": 0.16, "overlap": -22 },
+    { "title": "Hybrid — Sky",         "embedUrl": "https://player.vimeo.com/video/1118451963", "parallax": 0.14, "overlap": -24 },
+    { "title": "Hybrid — House",       "embedUrl": "https://player.vimeo.com/video/1118451960", "parallax": 0.18, "overlap": -22 },
+
+    { "title": "TEW — Twist",          "embedUrl": "https://player.vimeo.com/video/1118452534", "parallax": 0.11, "overlap": -26 },
+    { "title": "TEW — CU",             "embedUrl": "https://player.vimeo.com/video/1118452525", "parallax": 0.17, "overlap": -22 },
+    { "title": "TEW — Pull",           "embedUrl": "https://player.vimeo.com/video/1118452531", "parallax": 0.13, "overlap": -24 },
+
+    { "title": "1D6S — Underwater",    "embedUrl": "https://player.vimeo.com/video/1118451441", "parallax": 0.10, "overlap": -26 },
+    { "title": "1D6S — Shore Rock",    "embedUrl": "https://player.vimeo.com/video/1118451437", "parallax": 0.16, "overlap": -22 },
+    { "title": "1D6S — Floater",       "embedUrl": "https://player.vimeo.com/video/1118451434", "parallax": 0.12, "overlap": -24 },
+
+    { "title": "True Colors — Stairs (1.1)",   "embedUrl": "https://player.vimeo.com/video/1118453045", "parallax": 0.19, "overlap": -20, "aspect": 1.85 },
+    { "title": "True Colors — Bar (1.1)",      "embedUrl": "https://player.vimeo.com/video/1118453032", "parallax": 0.12, "overlap": -24, "aspect": 1.85 },
+    { "title": "True Colors — Hallway (1.1)",  "embedUrl": "https://player.vimeo.com/video/1118453038", "parallax": 0.15, "overlap": -22, "aspect": 1.85 },
+    { "title": "True Colors — Hallway2 (1.1)", "embedUrl": "https://player.vimeo.com/video/1118453041", "parallax": 0.18, "overlap": -22, "aspect": 1.85 },
+
+    { "title": "Jump — Push In",       "embedUrl": "https://player.vimeo.com/video/1118452809", "parallax": 0.14, "overlap": -24 },
+    { "title": "Jump — Whip Pan",      "embedUrl": "https://player.vimeo.com/video/1118452812", "parallax": 0.20, "overlap": -20 },
+    { "title": "Jump — Oner",          "embedUrl": "https://player.vimeo.com/video/1118452802", "parallax": 0.12, "overlap": -24 },
+    { "title": "Jump — Joyrider",      "embedUrl": "https://player.vimeo.com/video/1118452790", "parallax": 0.18, "overlap": -22 },
+    { "title": "Jump — Lineup",        "embedUrl": "https://player.vimeo.com/video/1118452797", "parallax": 0.13, "overlap": -24 },
+
+    { "title": "Journey — Beach",      "embedUrl": "https://player.vimeo.com/video/1118452250", "parallax": 0.11, "overlap": -26 },
+    { "title": "Journey — Cliff",      "embedUrl": "https://player.vimeo.com/video/1118452254", "parallax": 0.17, "overlap": -22 },
+    { "title": "Journey — Piano 2",    "embedUrl": "https://player.vimeo.com/video/1118452259", "parallax": 0.12, "overlap": -24 },
+    { "title": "Journey — Whale",      "embedUrl": "https://player.vimeo.com/video/1118452260", "parallax": 0.19, "overlap": -20 }
+  ]
+}
+
+Reply only with:
+"STEP DONE — base site created (files + folders + code + manifest)"
