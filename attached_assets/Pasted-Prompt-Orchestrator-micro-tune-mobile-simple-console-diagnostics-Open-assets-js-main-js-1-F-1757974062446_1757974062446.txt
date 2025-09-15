@@ -1,0 +1,54 @@
+Prompt — Orchestrator micro-tune (mobile) + simple console diagnostics
+Open /assets/js/main.js
+
+1) Find the MOBILE orchestrator tunables you added earlier (NEAR_PX, FAR_PX, MAX_ACTIVE, TICK_MS, SOFT_KEEP_MS, etc.)
+   and change to:
+
+   const NEAR_PX        = 2000;  // treat ± ~2.5 screens as "near"
+   const FAR_PX         = 3400;  // only pause if well outside this
+   const MAX_ACTIVE     = 5;     // try current + 2 above + 2 below
+   const TICK_MS        = 1100;  // slower cadence = less churn
+   const RESUME_CHECK_MS= 600;
+   const NUDGE_SECS     = 0.10;  // slightly stronger resume nudge
+   const SOFT_KEEP_MS   = 1500;  // keep newly-started clips alive briefly
+
+2) In registerMobilePlayer(ifr), ensure we track lastPlayedAt:
+   rec.lastPlayedAt = 0;
+
+3) In ensurePlaying(rec), after a successful play/nudge, set:
+   rec.lastPlayedAt = performance.now();
+
+4) Ensure ensurePaused(rec) respects hysteresis + FAR_PX (do not pause just-near or just-played):
+   async function ensurePaused(rec) {
+     try {
+       const r = rec.el.getBoundingClientRect();
+       const center = r.top + r.height/2;
+       const d = Math.abs(center - window.innerHeight/2);
+       const justPlayed = (performance.now() - (rec.lastPlayedAt || 0)) < SOFT_KEEP_MS;
+       if (d <= FAR_PX || justPlayed) return; // keep it running
+       await rec.player.pause().catch(()=>{});
+     } catch {}
+   }
+
+5) Add a tiny console helper right after the orchestrator is set up:
+   window.mobStatus = () => {
+     try {
+       const els = Array.from(document.querySelectorAll('.frame iframe'));
+       const playing = [];
+       const paused  = [];
+       return Promise.all(els.map(el => {
+         try {
+           const p = new Vimeo.Player(el);
+           return p.getPaused().then(isPaused => {
+             (isPaused ? paused : playing).push(el);
+           }).catch(()=>{});
+         } catch { }
+       })).then(() => ({ playing: playing.length, paused: paused.length, total: els.length }));
+     } catch { return { playing: 0, paused: 0, total: 0 }; }
+   };
+
+6) Save. If you have a cache-buster on main.js in index.html, bump it (e.g., ?v=3).
+
+Reply only with:
+"STEP DONE — mobile orchestrator tuned; diagnostics added"
+and list files touched.

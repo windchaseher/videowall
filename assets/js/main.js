@@ -113,18 +113,20 @@
     // Avoid duplicates if hot-reloaded
     window.__mobOrchestrator && window.__mobOrchestrator.stop && window.__mobOrchestrator.stop();
 
-    const registry = []; // { el, player, lastTime, lastUpdate, ensuring, ready }
-    const NEAR_PX   = 1400;  // within this distance from viewport center = "near"
-    const MAX_ACTIVE = 2;    // how many should be actively playing
-    const TICK_MS    = 1000; // cadence for orchestration
-    const RESUME_CHECK_MS = 500; // check progress after requesting play
-    const NUDGE_SECS = 0.08; // tiny seek if stalled
+    const registry = []; // { el, player, lastTime, lastUpdate, ensuring, ready, lastPlayedAt }
+    const NEAR_PX        = 2000;  // treat ± ~2.5 screens as "near"
+    const FAR_PX         = 3400;  // only pause if well outside this
+    const MAX_ACTIVE     = 5;     // try current + 2 above + 2 below
+    const TICK_MS        = 1100;  // slower cadence = less churn
+    const RESUME_CHECK_MS= 600;
+    const NUDGE_SECS     = 0.10;  // slightly stronger resume nudge
+    const SOFT_KEEP_MS   = 1500;  // keep newly-started clips alive briefly
 
     function registerMobilePlayer(ifr) {
       if (!window.Vimeo || !window.Vimeo.Player) return;
       try {
         const p = new Vimeo.Player(ifr);
-        const rec = { el: ifr, player: p, lastTime: 0, lastUpdate: performance.now(), ensuring: false, ready: false };
+        const rec = { el: ifr, player: p, lastTime: 0, lastUpdate: performance.now(), ensuring: false, ready: false, lastPlayedAt: 0 };
         registry.push(rec);
         p.on('timeupdate', (data) => {
           rec.lastTime   = (data && typeof data.seconds === 'number') ? data.seconds : rec.lastTime;
@@ -163,12 +165,20 @@
           }
           await rec.player.play().catch(()=>{});
         }
+        rec.lastPlayedAt = performance.now();
       } catch {}
       rec.ensuring = false;
     }
 
     async function ensurePaused(rec) {
-      try { await rec.player.pause().catch(()=>{}); } catch {}
+      try {
+        const r = rec.el.getBoundingClientRect();
+        const center = r.top + r.height/2;
+        const d = Math.abs(center - window.innerHeight/2);
+        const justPlayed = (performance.now() - (rec.lastPlayedAt || 0)) < SOFT_KEEP_MS;
+        if (d <= FAR_PX || justPlayed) return; // keep it running
+        await rec.player.pause().catch(()=>{});
+      } catch {}
     }
 
     function tick() {
@@ -199,6 +209,23 @@
 
     window.__mobOrchestrator = {
       stop() { clearInterval(id); }
+    };
+
+    // Console diagnostics helper
+    window.mobStatus = () => {
+      try {
+        const els = Array.from(document.querySelectorAll('.frame iframe'));
+        const playing = [];
+        const paused  = [];
+        return Promise.all(els.map(el => {
+          try {
+            const p = new Vimeo.Player(el);
+            return p.getPaused().then(isPaused => {
+              (isPaused ? paused : playing).push(el);
+            }).catch(()=>{});
+          } catch { }
+        })).then(() => ({ playing: playing.length, paused: paused.length, total: els.length }));
+      } catch { return { playing: 0, paused: 0, total: 0 }; }
     };
   }
 
