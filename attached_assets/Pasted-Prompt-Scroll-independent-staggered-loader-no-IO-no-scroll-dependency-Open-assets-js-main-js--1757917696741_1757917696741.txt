@@ -1,0 +1,124 @@
+Prompt — Scroll-independent staggered loader (no IO, no scroll dependency)
+
+Open /assets/js/main.js and replace ONLY the current lazy/staggered loading section with the code below.
+Do NOT change: Vimeo URL builder, watermark, audio, parallax, overlap clamps.
+
+1) Ensure this flag exists near the top:
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+2) After the render loop creates all `.frame` elements (each with frame.dataset.embed set), insert EXACTLY:
+
+// ---- SCROLL-INDEPENDENT STAGGERED LOADER ----
+const frames = Array.from(document.querySelectorAll('.frame'));
+
+// Tunables (you can tweak later if needed)
+const initialBurstCount   = isSmall ? 6 : 8;   // mount these immediately
+const batchSize           = isSmall ? 3 : 4;   // mount this many per tick
+const tickMs              = 700;               // time between ticks
+const maxConcurrentLoads  = isSmall ? 3 : 10;  // simultaneous iframes allowed
+const loadTimeoutMs       = 7000;              // consider a load "settled" after this
+
+let inFlight = 0;
+let nextIndex = initialBurstCount;
+let batchTimer = null;
+
+function mountIframe(frame) {
+  if (!frame || frame.dataset.mounted === '1') return;
+  const src = frame.dataset.embed;
+  if (!src) return;
+  if (inFlight >= maxConcurrentLoads) return; // caller will try later
+
+  inFlight++;
+
+  const iframe = document.createElement('iframe');
+  iframe.src = src;
+  iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+  iframe.setAttribute('loading', 'lazy');
+  Object.assign(iframe.style, {
+    border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
+  });
+
+  frame.style.position = 'relative';
+  frame.appendChild(iframe);
+  frame.dataset.mounted = '1';
+
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    inFlight = Math.max(0, inFlight - 1);
+  };
+
+  const t = setTimeout(settle, loadTimeoutMs);
+  iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
+}
+
+// 0) Eager burst (top-of-page feels instant)
+frames.slice(0, initialBurstCount).forEach(f => mountIframe(f));
+
+// 1) Scroll-independent batches (keeps loading even if user doesn’t scroll)
+function loadNextBatch() {
+  if (nextIndex >= frames.length) {
+    if (batchTimer) { clearInterval(batchTimer); batchTimer = null; }
+    return;
+  }
+  let mountedThisTick = 0;
+  while (mountedThisTick < batchSize && nextIndex < frames.length) {
+    const f = frames[nextIndex];
+    const before = inFlight;
+    mountIframe(f);
+    if (inFlight > before) { mountedThisTick++; nextIndex++; }
+    else break; // concurrency full; try again next tick
+  }
+}
+if (!batchTimer) batchTimer = setInterval(loadNextBatch, tickMs);
+
+// 2) Idle warming (also independent of scroll)
+function scheduleWarm() {
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(() => loadNextBatch(), { timeout: tickMs });
+  } else {
+    setTimeout(loadNextBatch, tickMs);
+  }
+}
+window.addEventListener('load', scheduleWarm);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) scheduleWarm(); // resume warming when tab becomes active
+});
+
+// 3) Last-resort safety: force-mount anything left after ~12s
+setTimeout(() => {
+  for (let i = 0; i < frames.length; i++) {
+    if (frames[i].dataset.mounted !== '1') {
+      const before = inFlight;
+      mountIframe(frames[i]);
+      if (inFlight === before) {
+        const iframe = document.createElement('iframe');
+        iframe.src = frames[i].dataset.embed;
+        iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+        iframe.setAttribute('loading', 'lazy');
+        Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+        frames[i].style.position = 'relative';
+        frames[i].appendChild(iframe);
+        frames[i].dataset.mounted = '1';
+      }
+    }
+  }
+}, 12000);
+
+// Optional console diagnostic
+window.reportVimeoMounts = () => {
+  const total = frames.length;
+  const mounted = frames.filter(f => f.dataset.mounted === '1').length;
+  return { total, mounted, inFlight };
+};
+
+3) Remove any existing IntersectionObserver / recycling code blocks tied to lazy loading.
+
+After changes, verify on external preview (desktop & iPhone):
+- First 6–8 videos appear immediately.
+- Remaining clips continue loading in small batches without any scrolling.
+- No permanent blanks; parallax/overlap unchanged; watermark & click-to-start audio unchanged.
+
+Reply only with:
+"STEP DONE — scroll-independent staggered loader applied and verified"
