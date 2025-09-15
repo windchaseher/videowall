@@ -94,7 +94,7 @@
     frame.style.position = 'relative';
     frame.appendChild(iframe);
     frame.dataset.mounted = '1';
-    registerPlayer(iframe);
+    if (isSmall) { registerPlayer(iframe); }
 
     return true;
   }
@@ -134,7 +134,7 @@
       frame.style.position = 'relative';
       frame.appendChild(iframe);
       frame.dataset.mounted = '1';
-      registerPlayer(iframe);
+      if (isSmall) { registerPlayer(iframe); }
       return iframe;
     }
 
@@ -191,7 +191,7 @@
         fr.style.position = 'relative';
         fr.appendChild(el);
         fr.dataset.mounted = '1';
-        registerPlayer(el);
+        if (isSmall) { registerPlayer(el); }
       });
     }, 12000);
   }
@@ -259,7 +259,7 @@
         if (frames[i].dataset.mounted !== '1') {
           mountIframe(frames[i], /* eager */ true);
           const iframe = frames[i].querySelector('iframe');
-          if (iframe) registerPlayer(iframe);
+          if (iframe && isSmall) { registerPlayer(iframe); }
         }
       }
     }, desktopConfig.finalSweepMs);
@@ -351,5 +351,7 @@
       }
     }
   }
-  setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);
+  if (isSmall) {
+    setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);
+  }
 })();
