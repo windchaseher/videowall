@@ -1,0 +1,154 @@
+Prompt — Mobile sliding window v2 (hysteresis + direction-aware + soft cap)
+Open /assets/js/main.js. Leave DESKTOP loader, parallax, watermark, audio, URL builder as-is.
+Replace ONLY the MOBILE sliding-window section with the block below.
+
+1) Ensure the device flag exists near the top:
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+2) After your frames are created (each .frame has frame.dataset.embed set), insert EXACTLY:
+
+if (isSmall) {
+  const frames = Array.from(document.querySelectorAll('.frame'));
+
+  // --- Tunables (mobile only) ---
+  const KEEP_BEHIND = 2;     // clips to keep behind viewport center
+  const KEEP_AHEAD  = 3;     // clips to keep ahead (actively visible window)
+  const UNMOUNT_BEHIND = 4;  // only unmount when farther than this behind
+  const UNMOUNT_AHEAD  = 5;  // only unmount when farther than this ahead
+  const PREFETCH_BEHIND = 1; // pre-mount a bit behind when scrolling up
+  const PREFETCH_AHEAD  = 2; // pre-mount ahead when scrolling down
+  const UPDATE_MS = 300;     // update cadence
+  const MAX_MOUNTED = 9;     // soft cap on number of mounted iframes
+  const JUST_MOUNTED_COOLDOWN_MS = 1200; // don't unmount very recent mounts
+
+  let lastScrollY = window.scrollY;
+  let scrollDir = 1; // +1 down, -1 up
+
+  const mountedSet = new Set();        // frames currently mounted
+  const lastMountedAt = new WeakMap(); // frame -> timestamp of mount
+
+  function now() { return performance.now(); }
+
+  function mountIframeEager(frame) {
+    if (!frame || frame.dataset.mounted === '1') return false;
+    const src = frame.dataset.embed; if (!src) return false;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = src;
+    iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    // IMPORTANT: no loading="lazy" on mobile for reliability
+    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+
+    frame.style.position = 'relative';
+    frame.appendChild(iframe);
+    frame.dataset.mounted = '1';
+    mountedSet.add(frame);
+    lastMountedAt.set(frame, now());
+
+    // If you have registerPlayer(iframe) for freeze-nudge, keep it mobile-only
+    if (typeof registerPlayer === 'function') { registerPlayer(iframe); }
+    return true;
+  }
+
+  function unmountIframe(frame) {
+    if (!frame || frame.dataset.mounted !== '1') return;
+    // Respect cooldown to avoid thrash
+    const t = lastMountedAt.get(frame) || 0;
+    if (now() - t < JUST_MOUNTED_COOLDOWN_MS) return;
+
+    const ifr = frame.querySelector('iframe');
+    if (ifr) try { ifr.remove(); } catch {}
+    frame.dataset.mounted = '0';
+    mountedSet.delete(frame);
+  }
+
+  function nearestIndexToViewportCenter() {
+    let best = 0, bestD = Infinity;
+    const vhc = window.innerHeight / 2;
+    frames.forEach((f, i) => {
+      const r = f.getBoundingClientRect();
+      const c = r.top + r.height / 2;
+      const d = Math.abs(c - vhc);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
+  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+  // Eagerly mount the first few so the page shows life
+  for (let i = 0; i < Math.min(2, frames.length); i++) mountIframeEager(frames[i]);
+
+  function updateWindow() {
+    const y = window.scrollY;
+    const dir = (y > lastScrollY) ? +1 : (y < lastScrollY ? -1 : scrollDir);
+    scrollDir = dir;
+    lastScrollY = y;
+
+    const center = nearestIndexToViewportCenter();
+
+    // Keep range (narrower) — these MUST be mounted
+    const keepStart = clamp(center - KEEP_BEHIND, 0, frames.length - 1);
+    const keepEnd   = clamp(center + KEEP_AHEAD,  0, frames.length - 1);
+
+    // Prefetch range based on direction
+    const preStart = dir < 0
+      ? clamp(keepStart - PREFETCH_BEHIND, 0, frames.length - 1)
+      : keepStart;
+    const preEnd = dir > 0
+      ? clamp(keepEnd + PREFETCH_AHEAD, 0, frames.length - 1)
+      : keepEnd;
+
+    // Unmount thresholds (wider) — only unmount if FAR outside
+    const unStart = clamp(center - UNMOUNT_BEHIND, 0, frames.length - 1);
+    const unEnd   = clamp(center + UNMOUNT_AHEAD,  0, frames.length - 1);
+
+    // 1) Mount: ensure keep + prefetch are mounted
+    for (let i = preStart; i <= preEnd; i++) {
+      if (frames[i].dataset.mounted !== '1') mountIframeEager(frames[i]);
+    }
+
+    // 2) Soft cap: if too many mounted, recycle the farthest first (outside unmount band)
+    if (mountedSet.size > MAX_MOUNTED) {
+      // Build a list with distance to viewport center
+      const vhc = window.innerHeight / 2;
+      const candidates = [];
+      mountedSet.forEach(f => {
+        const idx = frames.indexOf(f);
+        if (idx >= unStart && idx <= unEnd) return; // inside unmount band → keep
+        const r = f.getBoundingClientRect();
+        const c = r.top + r.height / 2;
+        const d = Math.abs(c - vhc);
+        candidates.push({ f, d });
+      });
+      // Sort farthest first and unmount until under cap
+      candidates.sort((a,b) => b.d - a.d);
+      for (const { f } of candidates) {
+        if (mountedSet.size <= MAX_MOUNTED) break;
+        unmountIframe(f);
+      }
+    }
+
+    // 3) Hysteresis unmount: only unmount beyond the wider band
+    frames.forEach((f, i) => {
+      if (i < unStart && i < keepStart - 1) unmountIframe(f);
+      else if (i > unEnd && i > keepEnd + 1) unmountIframe(f);
+      // else keep it mounted (prevents thrash on quick direction changes)
+    });
+  }
+
+  // Run updates on a timer and on scroll/resize
+  const timer = setInterval(updateWindow, UPDATE_MS);
+  window.addEventListener('scroll', updateWindow, { passive: true });
+  window.addEventListener('resize', updateWindow);
+  window.addEventListener('load', updateWindow);
+  updateWindow();
+}
+
+3) Keep your existing mobile freeze-nudge loop as-is (it complements this).
+   Do NOT change desktop loader code.
+
+Save and run the EXTERNAL preview on iPhone/Android.
+
+Reply only with:
+"STEP DONE — mobile sliding window v2 (hysteresis + direction-aware) applied and verifi
