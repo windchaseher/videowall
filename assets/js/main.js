@@ -1,20 +1,19 @@
 (async function () {
   'use strict';
 
+  const isSmall = window.matchMedia('(max-width: 768px)').matches;
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   // Helper to enforce Vimeo params while preserving any existing ones
   function buildVimeoUrl(base) {
     try {
       const url = new URL(base);
       const p = url.searchParams;
-      p.set('autoplay', '1');
-      p.set('muted', '1');
-      p.set('loop', '1');
-      p.set('background', '1'); // hides controls + enforces autoplay/mute/loop
+      p.set('autoplay','1'); p.set('muted','1'); p.set('loop','1'); p.set('background','1');
       url.search = p.toString();
       return url.toString();
     } catch {
-      const sep = base.includes('?') ? '&' : '?';
-      return base + sep + 'autoplay=1&muted=1&loop=1&background=1';
+      return base + (base.includes('?') ? '&' : '?') + 'autoplay=1&muted=1&loop=1&background=1';
     }
   }
 
@@ -34,25 +33,76 @@
     const wrap = document.createElement('section');
     wrap.className = 'clip';
     let ov = (typeof c.overlap === 'number' ? c.overlap : -10);
-    // Clamp to a safe range (subtle overlap only)
-    ov = Math.max(-12, Math.min(-6, ov));
+    ov = Math.max(isSmall ? -8 : -12, Math.min(isSmall ? -4 : -6, ov));
     if (i > 0) wrap.style.marginTop = `${ov}px`;
     wrap.style.marginBottom = '4px';
-    wrap.dataset.speed = String(c.parallax || 0);
+    
+    const baseSpeed = Number(c.parallax || 0);
+    const speed = (isSmall || prefersReduced) ? baseSpeed * 0.6 : baseSpeed;
+    wrap.dataset.speed = String(speed);
 
     const frame = document.createElement('div');
     frame.className = 'frame';
     if (c.aspect && typeof c.aspect === 'number') frame.style.aspectRatio = `${c.aspect} / 1`;
-
-    const iframe = document.createElement('iframe');
-    iframe.src = buildVimeoUrl(c.embedUrl);
-    iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-    iframe.setAttribute('title', c.title || 'video');
-
-    frame.appendChild(iframe);
+    const finalUrl = buildVimeoUrl(c.embedUrl);
+    frame.dataset.embed = finalUrl; // defer actual iframe creation
+    frame.style.background = '#000';
     wrap.appendChild(frame);
+    
     reel.appendChild(wrap);
     return wrap;
+  });
+
+  const frames = Array.from(document.querySelectorAll('.frame'));
+  const maxConcurrentLoads = isSmall ? 3 : 8;           // higher on desktop
+  const rootMarginY         = isSmall ? '1200px' : '2400px'; // prefetch farther on desktop
+  let inFlight = 0;
+  const queue = [];
+
+  function mountIframe(frame) {
+    if (frame.dataset.mounted === '1') return;
+    const src = frame.dataset.embed;
+    if (!src) return;
+
+    if (inFlight >= maxConcurrentLoads) { queue.push(frame); return; }
+    inFlight++;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = src;
+    iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    iframe.setAttribute('loading', 'lazy');
+    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+
+    frame.style.position = 'relative';
+    frame.appendChild(iframe);
+    frame.dataset.mounted = '1';
+
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      inFlight = Math.max(0, inFlight - 1);
+      const next = queue.shift();
+      if (next) mountIframe(next);
+    };
+    const t = setTimeout(settle, 8000);
+    iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
+  }
+
+  const io = ('IntersectionObserver' in window)
+    ? new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            mountIframe(e.target);
+            io.unobserve(e.target);
+          }
+        });
+      }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
+    : null;
+
+  frames.forEach((f, idx) => {
+    if (!isSmall && idx < 3) mountIframe(f); // eager-mount top 3 on desktop
+    if (io) io.observe(f); else mountIframe(f);
   });
 
   // Subtle per-clip parallax
