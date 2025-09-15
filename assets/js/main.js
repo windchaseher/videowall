@@ -228,73 +228,112 @@
   if (isSmall) {
     const frames = Array.from(document.querySelectorAll('.frame'));
 
-    // Tunables (safe, simple)
-    const eagerCount         = Math.min(2, frames.length); // show life immediately
-    const interMountDelayMs  = 320;                         // spacing between mounts
-    const loadTimeoutMs      = 9000;                        // settle per mount even if 'load' stalls
+    const eagerCount          = Math.min(1, frames.length); // tiny eager burst
+    const interMountDelayMs   = 400;  // spacing between mounts
+    const loadTimeoutMs       = 12000; // give iOS time
+    const apiSettleWaitMs     = 700;  // wait after API recovery before moving on
+    const maxApiRetries       = 2;    // per clip
 
+    // Helper: mount one iframe (NO lazy on mobile)
     function mountIframeEager(frame) {
-      if (!frame || frame.dataset.mounted === '1') return false;
-      const src = frame.dataset.embed; if (!src) return false;
+      if (!frame || frame.dataset.mounted === '1') return null;
+      const src = frame.dataset.embed; if (!src) return null;
 
       const iframe = document.createElement('iframe');
       iframe.src = src;
       iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
       // IMPORTANT: no loading="lazy" on mobile
-      Object.assign(iframe.style, {
-        border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
-      });
+      Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
 
       frame.style.position = 'relative';
       frame.appendChild(iframe);
       frame.dataset.mounted = '1';
 
-      // Freeze-nudge registration (mobile only)
-      if (typeof registerPlayer === 'function') { registerPlayer(iframe); }
+      // Register for freeze-nudge (mobile only)
+      if (typeof registerPlayer === 'function') registerPlayer(iframe);
 
       return iframe;
     }
 
-    // 0) Tiny eager burst
+    // Helper: API-based recovery for a stuck player (no UI)
+    async function apiRecover(frame) {
+      if (!window.Vimeo || !window.Vimeo.Player) return false;
+      const ifr = frame.querySelector('iframe');
+      if (!ifr) return false;
+      try {
+        const p = new Vimeo.Player(ifr);
+        // Try a gentle nudge first (play); if that fails, unload and resume
+        await p.play().catch(()=>{});
+        // Wait briefly; if still not progressing, do unload cycle
+        await new Promise(r => setTimeout(r, 300));
+        const before = await p.getCurrentTime().catch(()=>null);
+        await new Promise(r => setTimeout(r, 300));
+        const after  = await p.getCurrentTime().catch(()=>null);
+        const progressed = (typeof before==='number' && typeof after==='number' && after > before + 0.01);
+        if (progressed) return true;
+
+        await p.unload().catch(()=>{});
+        await new Promise(r => setTimeout(r, 200));
+        await p.play().catch(()=>{});
+        await new Promise(r => setTimeout(r, apiSettleWaitMs));
+        return true;
+      } catch { return false; }
+    }
+
     (async () => {
+      // 0) tiny eager burst so page shows life
       for (let i = 0; i < eagerCount; i++) {
         mountIframeEager(frames[i]);
-        await new Promise(r => setTimeout(r, 220));
+        await new Promise(r => setTimeout(r, 250));
       }
 
-      // 1) Staggered persistent mounting (no unmounting)
+      // 1) strict sequential mounting with timeout + API recovery (no unmounting)
       for (let i = eagerCount; i < frames.length; i++) {
         const f = frames[i];
-        if (f.dataset.mounted === '1') continue;
+        if (!f || f.dataset.mounted === '1') continue;
 
         const ifr = mountIframeEager(f);
 
-        // Wait for load OR timeout, then spacing before next
-        await new Promise((resolve) => {
+        // Wait for 'load' OR timeout; then attempt API recovery up to 2x if needed
+        let loaded = await new Promise((resolve) => {
           let settled = false;
-          const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, loadTimeoutMs);
+          const t = setTimeout(() => { if (!settled) { settled = true; resolve(false); } }, loadTimeoutMs);
           if (ifr) {
             ifr.addEventListener('load', () => {
               if (!settled) { clearTimeout(t); settled = true; }
-              resolve();
+              resolve(true);
             }, { once: true });
           } else {
-            clearTimeout(t); resolve();
+            clearTimeout(t); resolve(false);
           }
         });
 
+        if (!loaded) {
+          // iframe didn't fire 'load'—try API recovery cycles
+          let recovered = false;
+          for (let r = 0; r < maxApiRetries && !recovered; r++) {
+            recovered = await apiRecover(f);
+          }
+        }
+
+        // spacing before next mount
         await new Promise(r => setTimeout(r, interMountDelayMs));
       }
 
-      // 2) Final sweep after 12s — if any frame missed, attach eagerly (no lazy)
+      // 2) final sweep at ~15s: eagerly attach any that somehow missed
       setTimeout(() => {
         frames.forEach(f => {
-          if (f.dataset.mounted !== '1') {
-            mountIframeEager(f);
-          }
+          if (f.dataset.mounted !== '1') mountIframeEager(f);
         });
-      }, 12000);
+      }, 15000);
     })();
+
+    // (Optional) if your freeze-nudge loop isn't already running mobile-only, start it:
+    if (typeof nudgeFrozenPlayers === 'function' && !window.__nudgeLoopStarted) {
+      window.__nudgeLoopStarted = true;
+      // Use whatever constants you defined earlier; example interval name shown:
+      // setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);
+    }
   } else {
     desktopHeartbeatLoad();
   }
