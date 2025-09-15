@@ -1,0 +1,74 @@
+Prompt — Vimeo API “freeze nudge” only (no pausing, no active-player limits)
+Open /index.html and add the Vimeo Player API (if not already present), just before </head>:
+
+  <script src="https://player.vimeo.com/api/player.js" defer></script>
+
+Now open /assets/js/main.js and make the following minimal additions. Do NOT change loaders, parallax, overlap, watermark, or audio.
+
+1) Ensure the Vimeo URL builder already sets these params (keep your existing function; just verify):
+   autoplay=1, muted=1, loop=1, background=1, autopause=0, playsinline=1
+
+2) Create a small registry and a register helper AFTER your iframe-mount code definitions (but before they’re used). This does NOT pause anything; it only tracks time and can “nudge” a stuck player.
+
+   // --- Vimeo player registry for freeze detection (no pausing) ---
+   const players = []; // entries: { el, player, lastTime, lastUpdate }
+
+   function registerPlayer(iframeEl) {
+     if (!window.Vimeo || !window.Vimeo.Player) return;
+     try {
+       const p = new Vimeo.Player(iframeEl);
+       const rec = { el: iframeEl, player: p, lastTime: 0, lastUpdate: performance.now() };
+       players.push(rec);
+
+       p.on('timeupdate', (data) => {
+         rec.lastTime   = (data && typeof data.seconds === 'number') ? data.seconds : rec.lastTime;
+         rec.lastUpdate = performance.now();
+       });
+     } catch (_) { /* ignore */ }
+   }
+
+3) Call registerPlayer(iframe) immediately whenever you append a new iframe in ANY loader path (desktop or mobile). For example, right after:
+     frame.appendChild(iframe);
+     frame.dataset.mounted = '1';
+   add:
+     registerPlayer(iframe);
+
+4) Add a tiny “freeze nudge” loop near the bottom of main.js (after loaders are set up). This does not pause anything; it only kicks a player if it looks frozen.
+
+   // --- Freeze nudge only (no pausing) ---
+   const FREEZE_CHECK_MS = 1200;   // how often to check
+   const FREEZE_WINDOW_MS = 3000;  // if no timeupdate for this long, consider frozen
+   const NUDGE_SECS = 0.06;        // small seek forward (video remains seamless)
+
+   async function nudgeFrozenPlayers() {
+     if (!players.length) return;
+     const now = performance.now();
+
+     for (const rec of players) {
+       // skip if element removed
+       if (!rec.el || !rec.el.isConnected) continue;
+       // frozen = timeupdate hasn't advanced in a while
+       if (now - rec.lastUpdate > FREEZE_WINDOW_MS) {
+         try {
+           const cur = await rec.player.getCurrentTime().catch(() => null);
+           if (typeof cur === 'number') {
+             await rec.player.setCurrentTime(Math.max(0, cur + NUDGE_SECS)).catch(() => {});
+             await rec.player.play().catch(() => {}); // reassert play
+           } else {
+             // Fall back: just try play
+             await rec.player.play().catch(() => {});
+           }
+         } catch (_) { /* ignore one-off errors */ }
+       }
+     }
+   }
+   setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);
+
+5) Do not add any pause/limit logic. Keep desktop and mobile loading behavior exactly as currently implemented.
+
+Run the external preview on desktop and iPhone/Android and verify:
+- Clips that previously froze resume within ~1–3 seconds without user action.
+- No change to how many players are active; no pausing behavior added.
+
+Reply only with:
+"STEP DONE — freeze nudge only applied and verified"

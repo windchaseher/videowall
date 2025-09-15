@@ -94,8 +94,26 @@
     frame.style.position = 'relative';
     frame.appendChild(iframe);
     frame.dataset.mounted = '1';
+    registerPlayer(iframe);
 
     return true;
+  }
+
+  // --- Vimeo player registry for freeze detection (no pausing) ---
+  const players = []; // entries: { el, player, lastTime, lastUpdate }
+
+  function registerPlayer(iframeEl) {
+    if (!window.Vimeo || !window.Vimeo.Player) return;
+    try {
+      const p = new Vimeo.Player(iframeEl);
+      const rec = { el: iframeEl, player: p, lastTime: 0, lastUpdate: performance.now() };
+      players.push(rec);
+
+      p.on('timeupdate', (data) => {
+        rec.lastTime   = (data && typeof data.seconds === 'number') ? data.seconds : rec.lastTime;
+        rec.lastUpdate = performance.now();
+      });
+    } catch (_) { /* ignore */ }
   }
 
   async function mobileSequentialLoadStrictNoLazy() {
@@ -116,6 +134,7 @@
       frame.style.position = 'relative';
       frame.appendChild(iframe);
       frame.dataset.mounted = '1';
+      registerPlayer(iframe);
       return iframe;
     }
 
@@ -172,6 +191,7 @@
         fr.style.position = 'relative';
         fr.appendChild(el);
         fr.dataset.mounted = '1';
+        registerPlayer(el);
       });
     }, 12000);
   }
@@ -236,7 +256,11 @@
     // Final sweep
     setTimeout(() => {
       for (let i = 0; i < frames.length; i++) {
-        if (frames[i].dataset.mounted !== '1') mountIframe(frames[i], /* eager */ true);
+        if (frames[i].dataset.mounted !== '1') {
+          mountIframe(frames[i], /* eager */ true);
+          const iframe = frames[i].querySelector('iframe');
+          if (iframe) registerPlayer(iframe);
+        }
       }
     }, desktopConfig.finalSweepMs);
   }
@@ -299,4 +323,33 @@
   ['click','pointerdown','touchstart','keydown'].forEach(ev =>
     window.addEventListener(ev, startAudioOnce, { once: true, passive: true })
   );
+
+  // --- Freeze nudge only (no pausing) ---
+  const FREEZE_CHECK_MS = 1200;   // how often to check
+  const FREEZE_WINDOW_MS = 3000;  // if no timeupdate for this long, consider frozen
+  const NUDGE_SECS = 0.06;        // small seek forward (video remains seamless)
+
+  async function nudgeFrozenPlayers() {
+    if (!players.length) return;
+    const now = performance.now();
+
+    for (const rec of players) {
+      // skip if element removed
+      if (!rec.el || !rec.el.isConnected) continue;
+      // frozen = timeupdate hasn't advanced in a while
+      if (now - rec.lastUpdate > FREEZE_WINDOW_MS) {
+        try {
+          const cur = await rec.player.getCurrentTime().catch(() => null);
+          if (typeof cur === 'number') {
+            await rec.player.setCurrentTime(Math.max(0, cur + NUDGE_SECS)).catch(() => {});
+            await rec.player.play().catch(() => {}); // reassert play
+          } else {
+            // Fall back: just try play
+            await rec.player.play().catch(() => {});
+          }
+        } catch (_) { /* ignore one-off errors */ }
+      }
+    }
+  }
+  setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);
 })();
