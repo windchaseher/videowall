@@ -57,18 +57,19 @@
   const frames = Array.from(document.querySelectorAll('.frame'));
   const maxConcurrentLoads = isSmall ? 2 : 8;
   const rootMarginY         = isSmall ? '1200px' : '2400px';
+  const retryCount = new WeakMap(); // frame -> number
 
   let inFlight = 0;
   const queue = [];
   const mounted = new Set(); // track frames that currently have an iframe
 
   function mountIframe(frame) {
-    if (frame.dataset.mounted === '1') return;
+    if (!frame || frame.dataset.mounted === '1') return;
     const src = frame.dataset.embed;
     if (!src) return;
 
-    // Prevent double-queueing
-    if (queue.includes(frame)) return;
+    // Prevent duplicate queueing
+    if (frame.dataset.queued === '1') return;
 
     // Desktop-only recycling
     if (!isSmall) {
@@ -79,18 +80,18 @@
     }
 
     if (inFlight >= maxConcurrentLoads) {
+      frame.dataset.queued = '1';
       queue.push(frame);
       return;
     }
+    frame.dataset.queued = '0';
     inFlight++;
 
     const iframe = document.createElement('iframe');
     iframe.src = src;
     iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
     iframe.setAttribute('loading', 'lazy');
-    Object.assign(iframe.style, {
-      border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
-    });
+    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
 
     frame.style.position = 'relative';
     frame.appendChild(iframe);
@@ -106,7 +107,24 @@
       if (next) mountIframe(next);
     };
 
-    const t = setTimeout(settle, 8000);
+    // Retry if load doesn't fire in time
+    const maxRetries = 2;
+    const t = setTimeout(() => {
+      if (settled) return;
+      const n = (retryCount.get(frame) || 0);
+      if (n < maxRetries) {
+        // Tear down and retry with small delay
+        try { iframe.remove(); } catch {}
+        frame.dataset.mounted = '0';
+        retryCount.set(frame, n + 1);
+        inFlight = Math.max(0, inFlight - 1);
+        setTimeout(() => mountIframe(frame), 400 + n * 400);
+      } else {
+        // Give up and settle so queue continues
+        settle();
+      }
+    }, 8000);
+
     iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
   }
 
@@ -121,6 +139,14 @@
     }
   }
 
+  function canRecycle(frame) {
+    const hasRetry = retryCount.get(frame) > 0;
+    if (hasRetry) return false;
+    const r = frame.getBoundingClientRect();
+    const far = (r.top > window.innerHeight + 4000) || (r.bottom < -4000);
+    return far;
+  }
+
   function unmountFarthest() {
     if (!isSmall) {
       if (!mounted.size) return;
@@ -128,6 +154,7 @@
       const viewportCenter = window.scrollY + window.innerHeight / 2;
       let worst = null, worstDist = -1;
       mounted.forEach(f => {
+        if (!canRecycle(f)) return;
         const r = f.getBoundingClientRect();
         const center = window.scrollY + r.top + r.height / 2;
         const d = Math.abs(center - viewportCenter);
@@ -147,10 +174,12 @@
             // Desktop-only recycling (optional)
             if (!isSmall) {
               // If far off-screen, you may unmount here as before; otherwise do nothing
-              const r = e.target.getBoundingClientRect();
-              const offscreen = r.top > window.innerHeight + 2 * parseInt(rootMarginY) ||
-                                r.bottom < -2 * parseInt(rootMarginY);
-              if (offscreen) unmountIframe(e.target);
+              if (canRecycle(e.target)) {
+                const r = e.target.getBoundingClientRect();
+                const offscreen = r.top > window.innerHeight + 2 * parseInt(rootMarginY) ||
+                                  r.bottom < -2 * parseInt(rootMarginY);
+                if (offscreen) unmountIframe(e.target);
+              }
             }
           }
         });
@@ -163,6 +192,26 @@
   });
 
   frames.forEach(f => { if (io) io.observe(f); else mountIframe(f); });
+
+  // Add an "end-of-page eager mount" that triggers when close to the bottom and also when only a few remain
+  function eagerMountTail() {
+    const doc = document.documentElement;
+    const distanceToBottom = (doc.scrollHeight - doc.scrollTop - window.innerHeight);
+    const remaining = frames.filter(f => f.dataset.mounted !== '1');
+    if (remaining.length && (remaining.length <= 4 || distanceToBottom < 2000)) {
+      remaining.forEach(f => mountIframe(f));
+    }
+  }
+  window.addEventListener('scroll', eagerMountTail, { passive: true });
+  window.addEventListener('load', eagerMountTail);
+  window.addEventListener('resize', eagerMountTail);
+
+  // Add a tiny diagnostic helper
+  window.reportVimeoMounts = () => {
+    const unmounted = frames.filter(f => f.dataset.mounted !== '1').length;
+    const queued = frames.filter(f => f.dataset.queued === '1').length;
+    return { total: frames.length, unmounted, queued };
+  };
 
   // Subtle per-clip parallax
   let ticking = false;
