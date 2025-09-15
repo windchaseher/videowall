@@ -9,11 +9,17 @@
     try {
       const url = new URL(base);
       const p = url.searchParams;
-      p.set('autoplay','1'); p.set('muted','1'); p.set('loop','1'); p.set('background','1');
+      p.set('autoplay','1');
+      p.set('muted','1');
+      p.set('loop','1');
+      p.set('background','1');
+      p.set('autopause','0');   // <-- important for many players at once
+      p.set('playsinline','1'); // <-- iOS inline
       url.search = p.toString();
       return url.toString();
     } catch {
-      return base + (base.includes('?') ? '&' : '?') + 'autoplay=1&muted=1&loop=1&background=1';
+      const sep = base.includes('?') ? '&' : '?';
+      return base + sep + 'autoplay=1&muted=1&loop=1&background=1&autopause=0&playsinline=1';
     }
   }
 
@@ -92,47 +98,71 @@
     return true;
   }
 
-  // --- MOBILE: sequential, one-by-one loader (no concurrency, no scroll dependency) ---
-  async function mobileSequentialLoad() {
-    // optional tiny eager burst
-    for (let i = 0; i < Math.min(mobileConfig.initialBurstCount, frames.length); i++) {
-      mountIframe(frames[i], /* eager */ true);
-      await new Promise(r => setTimeout(r, 200)); // tiny spacing
-    }
+  async function mobileSequentialLoadStrict() {
+    const frames = Array.from(document.querySelectorAll('.frame'));
 
-    for (let i = mobileConfig.initialBurstCount; i < frames.length; i++) {
+    // Mount a tiny eager burst WITHOUT lazy hint so we see something immediately
+    const eagerCount = Math.min(2, frames.length);
+    for (let i = 0; i < eagerCount; i++) {
+      // build src now (ensure URL builder is used upstream when setting frame.dataset.embed)
       const f = frames[i];
       if (f.dataset.mounted === '1') continue;
-
-      // Mount and wait for load or timeout
-      const ok = mountIframe(f, /* eager */ false);
-      if (!ok) continue;
-
-      await new Promise((resolve) => {
-        let settled = false;
-        const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, mobileConfig.loadTimeoutMs);
-        const ifr = f.querySelector('iframe');
-        if (ifr) {
-          ifr.addEventListener('load', () => {
-            if (!settled) { clearTimeout(t); settled = true; }
-            resolve();
-          }, { once: true });
-        } else {
-          clearTimeout(t); resolve();
-        }
-      });
-
-      // brief spacing to avoid back-to-back handshake spikes
+      const iframe = document.createElement('iframe');
+      iframe.src = f.dataset.embed;
+      iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+      // EAGER: don't set loading="lazy" for first two on mobile
+      Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+      f.style.position = 'relative';
+      f.appendChild(iframe);
+      f.dataset.mounted = '1';
+      // brief spacing
       await new Promise(r => setTimeout(r, 250));
     }
 
-    // Final sweep: ensure everything is present
-    for (let i = 0; i < frames.length; i++) {
-      if (frames[i].dataset.mounted !== '1') {
-        mountIframe(frames[i], /* eager */ true);
-        await new Promise(r => setTimeout(r, 120));
-      }
+    // Then strictly one-by-one with a comfortable delay between attempts
+    const loadTimeoutMs = 9000;       // slightly longer for iOS networks
+    const interMountDelayMs = 320;    // spacing to avoid handshake spikes
+
+    for (let i = eagerCount; i < frames.length; i++) {
+      const f = frames[i];
+      if (f.dataset.mounted === '1') continue;
+
+      // Create with lazy hint for the rest
+      const iframe = document.createElement('iframe');
+      iframe.src = f.dataset.embed;
+      iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+      iframe.setAttribute('loading', 'lazy');
+      Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+      f.style.position = 'relative';
+      f.appendChild(iframe);
+      f.dataset.mounted = '1';
+
+      // Wait for load OR timeout, then small delay
+      await new Promise((resolve) => {
+        let settled = false;
+        const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, loadTimeoutMs);
+        iframe.addEventListener('load', () => {
+          if (!settled) { clearTimeout(t); settled = true; }
+          resolve();
+        }, { once: true });
+      });
+
+      await new Promise(r => setTimeout(r, interMountDelayMs));
     }
+
+    // Final sweep after 12s: if anything still missed, attach eagerly
+    setTimeout(() => {
+      const left = Array.from(document.querySelectorAll('.frame')).filter(f => f.dataset.mounted !== '1');
+      left.forEach(f => {
+        const el = document.createElement('iframe');
+        el.src = f.dataset.embed;
+        el.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+        Object.assign(el.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+        f.style.position = 'relative';
+        f.appendChild(el);
+        f.dataset.mounted = '1';
+      });
+    }, 12000);
   }
 
   // --- DESKTOP: rAF heartbeat loader (parallel + staggered), unchanged behavior ---
@@ -202,7 +232,7 @@
 
   // Entry point: choose loader per device
   if (isSmall) {
-    mobileSequentialLoad();
+    mobileSequentialLoadStrict();
   } else {
     desktopHeartbeatLoad();
   }
