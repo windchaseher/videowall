@@ -33,7 +33,11 @@
   const clips = manifest.clips.map((c, i) => {
     const wrap = document.createElement('section');
     wrap.className = 'clip';
-    if (typeof c.overlap === 'number' && i > 0) wrap.style.marginTop = `${c.overlap}px`;
+    let ov = (typeof c.overlap === 'number' ? c.overlap : -10);
+    // Clamp to a safe range (subtle overlap only)
+    ov = Math.max(-12, Math.min(-6, ov));
+    if (i > 0) wrap.style.marginTop = `${ov}px`;
+    wrap.style.marginBottom = '4px';
     wrap.dataset.speed = String(c.parallax || 0);
 
     const frame = document.createElement('div');
@@ -54,16 +58,23 @@
   // Subtle per-clip parallax
   let ticking = false;
   function applyParallax() {
-    const y = window.scrollY || 0;
-    for (const el of clips) {
+    const viewportCenter = window.innerHeight / 2;
+    // Use a cached NodeList each frame to avoid layout thrash
+    document.querySelectorAll('.clip').forEach(el => {
       const s = parseFloat(el.dataset.speed || '0') || 0;
-      if (s !== 0) el.style.transform = `translateY(${y * s}px)`;
-    }
+      if (!s) { el.style.transform = ''; return; }
+      const rect = el.getBoundingClientRect();
+      const elCenter = rect.top + rect.height / 2;
+      const delta = viewportCenter - elCenter; // positive when element is below center
+      el.style.transform = `translateY(${delta * s}px)`;
+    });
     ticking = false;
   }
-  window.addEventListener('scroll', () => {
-    if (!ticking) { ticking = true; requestAnimationFrame(applyParallax); }
-  }, { passive: true });
+  // Keep the same scroll listener but also listen to resize and load:
+  const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(applyParallax); } };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll);
+  window.addEventListener('load', onScroll);
   applyParallax();
 
   // Background audio: robust click-to-start
