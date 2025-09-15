@@ -53,29 +53,46 @@
     return wrap;
   });
 
+  // --- Lazy embed with recycling ---
   const frames = Array.from(document.querySelectorAll('.frame'));
-  const maxConcurrentLoads = isSmall ? 3 : 8;           // higher on desktop
-  const rootMarginY         = isSmall ? '1200px' : '2400px'; // prefetch farther on desktop
+
+  // Device-aware tuning
+  const maxConcurrentLoads = isSmall ? 2 : 6;        // fewer simultaneous handshakes on phones
+  const rootMarginY         = isSmall ? '900px' : '1800px'; // prefetch window
+  const maxMountedIframes   = isSmall ? 5 : 9;       // recycle when above this count
+
   let inFlight = 0;
   const queue = [];
+  const mounted = new Set(); // track frames that currently have an iframe
 
   function mountIframe(frame) {
     if (frame.dataset.mounted === '1') return;
     const src = frame.dataset.embed;
     if (!src) return;
 
-    if (inFlight >= maxConcurrentLoads) { queue.push(frame); return; }
+    // If we're above the mounted limit, unmount the farthest frame first
+    if (mounted.size >= maxMountedIframes) {
+      unmountFarthest();
+    }
+
+    if (inFlight >= maxConcurrentLoads) {
+      queue.push(frame);
+      return;
+    }
     inFlight++;
 
     const iframe = document.createElement('iframe');
     iframe.src = src;
     iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
     iframe.setAttribute('loading', 'lazy');
-    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+    Object.assign(iframe.style, {
+      border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
+    });
 
     frame.style.position = 'relative';
     frame.appendChild(iframe);
     frame.dataset.mounted = '1';
+    mounted.add(frame);
 
     let settled = false;
     const settle = () => {
@@ -85,8 +102,32 @@
       const next = queue.shift();
       if (next) mountIframe(next);
     };
+
     const t = setTimeout(settle, 8000);
     iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
+  }
+
+  function unmountIframe(frame) {
+    if (frame.dataset.mounted !== '1') return;
+    const iframe = frame.querySelector('iframe');
+    if (iframe) iframe.remove();
+    frame.dataset.mounted = '0';
+    mounted.delete(frame);
+    // keep placeholder
+  }
+
+  function unmountFarthest() {
+    if (!mounted.size) return;
+    // Unmount the frame whose center is farthest from viewport center
+    const viewportCenter = window.scrollY + window.innerHeight / 2;
+    let worst = null, worstDist = -1;
+    mounted.forEach(f => {
+      const r = f.getBoundingClientRect();
+      const center = window.scrollY + r.top + r.height / 2;
+      const d = Math.abs(center - viewportCenter);
+      if (d > worstDist) { worstDist = d; worst = f; }
+    });
+    if (worst) unmountIframe(worst);
   }
 
   const io = ('IntersectionObserver' in window)
@@ -94,14 +135,21 @@
         entries.forEach(e => {
           if (e.isIntersecting) {
             mountIframe(e.target);
-            io.unobserve(e.target);
+            // Keep observing so we can recycle when it scrolls far away
+          } else {
+            // If it moved far out of view, recycle it
+            const r = e.target.getBoundingClientRect();
+            const offscreen = r.top > window.innerHeight + 2 * parseInt(rootMarginY) ||
+                              r.bottom < -2 * parseInt(rootMarginY);
+            if (offscreen) unmountIframe(e.target);
           }
         });
       }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
     : null;
 
+  // Desktop: eagerly mount the first 2 frames for instant paint
   frames.forEach((f, idx) => {
-    if (!isSmall && idx < 3) mountIframe(f); // eager-mount top 3 on desktop
+    if (!isSmall && idx < 2) mountIframe(f);
     if (io) io.observe(f); else mountIframe(f);
   });
 
