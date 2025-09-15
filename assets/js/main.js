@@ -53,30 +53,31 @@
     return wrap;
   });
 
-  // ---- rAF HEARTBEAT STAGGERED LOADER (NO SCROLL DEPENDENCY) ----
+  // -------- DESKTOP: keep rAF heartbeat loader --------
   const frames = Array.from(document.querySelectorAll('.frame'));
 
-  // Device-tuned knobs (feel free to tweak later)
-  const initialBurstCount   = isSmall ? 4  : 12;  // eager upfront
-  const batchSize           = isSmall ? 3  : 5;   // per heartbeat
-  const maxConcurrentLoads  = isSmall ? 3  : 12;  // simultaneous loads cap
-  const loadTimeoutMs       = 7000;               // settle even if 'load' never fires
-  const heartbeatMs         = 80;                 // rAF cadence
-  const watchdogMs          = 1500;               // backup timer if rAF throttled
-  const finalSweepMs        = 12000;              // force-mount leftover after this
-  const jitterMs            = isSmall ? 40 : 20;  // tiny random delay to avoid bursts aligning
+  const desktopConfig = {
+    initialBurstCount: 12,
+    batchSize: 5,
+    maxConcurrent: 12,
+    loadTimeoutMs: 7000,
+    heartbeatMs: 80,
+    watchdogMs: 1500,
+    finalSweepMs: 12000
+  };
 
+  const mobileConfig = {
+    // We'll load strictly one-by-one for reliability
+    loadTimeoutMs: 8000,
+    initialBurstCount: 3 // optional: eager mount a couple before sequential
+  };
+
+  // Shared mount primitive
   let inFlight = 0;
-  let nextIndex = 0;
-  let lastBeat = 0;
-
-  // Mount one frame (optionally eager = no lazy hint)
   function mountIframe(frame, eager = false) {
-    if (!frame || frame.dataset.mounted === '1') return;
-    const src = frame.dataset.embed; if (!src) return;
-    if (inFlight >= maxConcurrentLoads) return;
-
-    inFlight++;
+    if (!frame || frame.dataset.mounted === '1') return false;
+    const src = frame.dataset.embed;
+    if (!src) return false;
 
     const iframe = document.createElement('iframe');
     iframe.src = src;
@@ -88,75 +89,123 @@
     frame.appendChild(iframe);
     frame.dataset.mounted = '1';
 
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      inFlight = Math.max(0, inFlight - 1);
-    };
-    const t = setTimeout(settle, loadTimeoutMs);
-    iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
+    return true;
   }
 
-  // 0) Eager burst (desktop strong, mobile lighter)
-  for (let i = 0; i < Math.min(initialBurstCount, frames.length); i++) {
-    mountIframe(frames[i], /* eager */ true);
-  }
-  nextIndex = initialBurstCount;
-
-  // 1) rAF heartbeat: keeps loading even if user never scrolls
-  function beat(ts) {
-    if (!lastBeat || (ts - lastBeat) >= heartbeatMs) {
-      lastBeat = ts;
-      let mountedThisBeat = 0;
-      while (mountedThisBeat < batchSize && nextIndex < frames.length) {
-        const f = frames[nextIndex];
-        const before = inFlight;
-        // add a tiny jitter to smooth spikes
-        const delay = Math.random() * jitterMs;
-        setTimeout(() => mountIframe(f), delay);
-        // Count it only if we actually started (checked next tick)
-        // We optimistically advance the index to keep cadence
-        mountedThisBeat++;
-        nextIndex++;
-      }
+  // --- MOBILE: sequential, one-by-one loader (no concurrency, no scroll dependency) ---
+  async function mobileSequentialLoad() {
+    // optional tiny eager burst
+    for (let i = 0; i < Math.min(mobileConfig.initialBurstCount, frames.length); i++) {
+      mountIframe(frames[i], /* eager */ true);
+      await new Promise(r => setTimeout(r, 200)); // tiny spacing
     }
-    if (nextIndex < frames.length) requestAnimationFrame(beat);
-  }
-  requestAnimationFrame(beat);
 
-  // 2) Watchdog: fires batches even if rAF is throttled (iOS background/tab)
-  function tickWatchdog() {
-    if (nextIndex >= frames.length) { clearInterval(watchdog); return; }
-    let mountedThisTick = 0;
-    while (mountedThisTick < Math.max(1, Math.floor(batchSize / 2)) && nextIndex < frames.length) {
-      const before = inFlight;
-      mountIframe(frames[nextIndex]);
-      if (inFlight > before) { mountedThisTick++; nextIndex++; }
-      else break;
+    for (let i = mobileConfig.initialBurstCount; i < frames.length; i++) {
+      const f = frames[i];
+      if (f.dataset.mounted === '1') continue;
+
+      // Mount and wait for load or timeout
+      const ok = mountIframe(f, /* eager */ false);
+      if (!ok) continue;
+
+      await new Promise((resolve) => {
+        let settled = false;
+        const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, mobileConfig.loadTimeoutMs);
+        const ifr = f.querySelector('iframe');
+        if (ifr) {
+          ifr.addEventListener('load', () => {
+            if (!settled) { clearTimeout(t); settled = true; }
+            resolve();
+          }, { once: true });
+        } else {
+          clearTimeout(t); resolve();
+        }
+      });
+
+      // brief spacing to avoid back-to-back handshake spikes
+      await new Promise(r => setTimeout(r, 250));
     }
-  }
-  const watchdog = setInterval(tickWatchdog, watchdogMs);
 
-  // 3) Final sweep: ensure nothing is stranded after N seconds
-  setTimeout(() => {
+    // Final sweep: ensure everything is present
     for (let i = 0; i < frames.length; i++) {
       if (frames[i].dataset.mounted !== '1') {
-        const before = inFlight;
-        mountIframe(frames[i]);
-        if (inFlight === before) {
-          // last resort: attach even if over concurrency cap
-          const iframe = document.createElement('iframe');
-          iframe.src = frames[i].dataset.embed;
-          iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
-          Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
-          frames[i].style.position = 'relative';
-          frames[i].appendChild(iframe);
-          frames[i].dataset.mounted = '1';
-        }
+        mountIframe(frames[i], /* eager */ true);
+        await new Promise(r => setTimeout(r, 120));
       }
     }
-  }, finalSweepMs);
+  }
+
+  // --- DESKTOP: rAF heartbeat loader (parallel + staggered), unchanged behavior ---
+  function desktopHeartbeatLoad() {
+    const cfg = desktopConfig;
+    let nextIndex = 0;
+    let lastBeat = 0;
+
+    // Eager burst
+    for (let i = 0; i < Math.min(cfg.initialBurstCount, frames.length); i++) {
+      if (inFlight >= cfg.maxConcurrent) break;
+      const mounted = mountIframe(frames[i], /* eager */ true);
+      if (mounted) inFlight++;
+    }
+    nextIndex = cfg.initialBurstCount;
+
+    function mountWithTimeout(frame) {
+      if (!frame || frame.dataset.mounted === '1') return false;
+      if (inFlight >= cfg.maxConcurrent) return false;
+      const ok = mountIframe(frame, /* eager */ false);
+      if (!ok) return false;
+      inFlight++;
+      let settled = false;
+      const ifr = frame.querySelector('iframe');
+      const t = setTimeout(() => { if (!settled) { settled = true; inFlight = Math.max(0, inFlight - 1); } }, cfg.loadTimeoutMs);
+      if (ifr) {
+        ifr.addEventListener('load', () => { if (!settled) { clearTimeout(t); settled = true; inFlight = Math.max(0, inFlight - 1); } }, { once: true });
+      } else {
+        clearTimeout(t); inFlight = Math.max(0, inFlight - 1);
+      }
+      return true;
+    }
+
+    function beat(ts) {
+      if (!lastBeat || (ts - lastBeat) >= cfg.heartbeatMs) {
+        lastBeat = ts;
+        let mountedThisBeat = 0;
+        while (mountedThisBeat < cfg.batchSize && nextIndex < frames.length) {
+          const before = inFlight;
+          const ok = mountWithTimeout(frames[nextIndex]);
+          if (ok && inFlight > before) { mountedThisBeat++; nextIndex++; }
+          else break;
+        }
+      }
+      if (nextIndex < frames.length) requestAnimationFrame(beat);
+    }
+    requestAnimationFrame(beat);
+
+    const watchdog = setInterval(() => {
+      if (nextIndex >= frames.length) { clearInterval(watchdog); return; }
+      let mountedThisTick = 0;
+      while (mountedThisTick < Math.max(1, Math.floor(desktopConfig.batchSize / 2)) && nextIndex < frames.length) {
+        const before = inFlight;
+        const ok = mountWithTimeout(frames[nextIndex]);
+        if (ok && inFlight > before) { mountedThisTick++; nextIndex++; }
+        else break;
+      }
+    }, desktopConfig.watchdogMs);
+
+    // Final sweep
+    setTimeout(() => {
+      for (let i = 0; i < frames.length; i++) {
+        if (frames[i].dataset.mounted !== '1') mountIframe(frames[i], /* eager */ true);
+      }
+    }, desktopConfig.finalSweepMs);
+  }
+
+  // Entry point: choose loader per device
+  if (isSmall) {
+    mobileSequentialLoad();
+  } else {
+    desktopHeartbeatLoad();
+  }
 
   // Optional console helper for you
   window.reportVimeoMounts = () => {

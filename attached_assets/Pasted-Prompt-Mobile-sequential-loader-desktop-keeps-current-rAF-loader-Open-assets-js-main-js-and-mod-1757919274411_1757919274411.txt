@@ -1,0 +1,171 @@
+Prompt — Mobile sequential loader (desktop keeps current rAF loader)
+Open /assets/js/main.js and modify ONLY the loading section. Do NOT change: Vimeo URL builder, watermark, audio, parallax, overlap clamps.
+
+1) Ensure this flag exists near the top:
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+2) After the render loop creates all `.frame` elements (each with frame.dataset.embed set), REPLACE your current loader block with this:
+
+// -------- DESKTOP: keep rAF heartbeat loader --------
+const frames = Array.from(document.querySelectorAll('.frame'));
+
+const desktopConfig = {
+  initialBurstCount: 12,
+  batchSize: 5,
+  maxConcurrent: 12,
+  loadTimeoutMs: 7000,
+  heartbeatMs: 80,
+  watchdogMs: 1500,
+  finalSweepMs: 12000
+};
+
+const mobileConfig = {
+  // We'll load strictly one-by-one for reliability
+  loadTimeoutMs: 8000,
+  initialBurstCount: 3 // optional: eager mount a couple before sequential
+};
+
+// Shared mount primitive
+let inFlight = 0;
+function mountIframe(frame, eager = false) {
+  if (!frame || frame.dataset.mounted === '1') return false;
+  const src = frame.dataset.embed;
+  if (!src) return false;
+
+  const iframe = document.createElement('iframe');
+  iframe.src = src;
+  iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+  if (!eager) iframe.setAttribute('loading', 'lazy');
+  Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+
+  frame.style.position = 'relative';
+  frame.appendChild(iframe);
+  frame.dataset.mounted = '1';
+
+  return true;
+}
+
+// --- MOBILE: sequential, one-by-one loader (no concurrency, no scroll dependency) ---
+async function mobileSequentialLoad() {
+  // optional tiny eager burst
+  for (let i = 0; i < Math.min(mobileConfig.initialBurstCount, frames.length); i++) {
+    mountIframe(frames[i], /* eager */ true);
+    await new Promise(r => setTimeout(r, 200)); // tiny spacing
+  }
+
+  for (let i = mobileConfig.initialBurstCount; i < frames.length; i++) {
+    const f = frames[i];
+    if (f.dataset.mounted === '1') continue;
+
+    // Mount and wait for load or timeout
+    const ok = mountIframe(f, /* eager */ false);
+    if (!ok) continue;
+
+    await new Promise((resolve) => {
+      let settled = false;
+      const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, mobileConfig.loadTimeoutMs);
+      const ifr = f.querySelector('iframe');
+      if (ifr) {
+        ifr.addEventListener('load', () => {
+          if (!settled) { clearTimeout(t); settled = true; }
+          resolve();
+        }, { once: true });
+      } else {
+        clearTimeout(t); resolve();
+      }
+    });
+
+    // brief spacing to avoid back-to-back handshake spikes
+    await new Promise(r => setTimeout(r, 250));
+  }
+
+  // Final sweep: ensure everything is present
+  for (let i = 0; i < frames.length; i++) {
+    if (frames[i].dataset.mounted !== '1') {
+      mountIframe(frames[i], /* eager */ true);
+      await new Promise(r => setTimeout(r, 120));
+    }
+  }
+}
+
+// --- DESKTOP: rAF heartbeat loader (parallel + staggered), unchanged behavior ---
+function desktopHeartbeatLoad() {
+  const cfg = desktopConfig;
+  let nextIndex = 0;
+  let lastBeat = 0;
+
+  // Eager burst
+  for (let i = 0; i < Math.min(cfg.initialBurstCount, frames.length); i++) {
+    if (inFlight >= cfg.maxConcurrent) break;
+    const mounted = mountIframe(frames[i], /* eager */ true);
+    if (mounted) inFlight++;
+  }
+  nextIndex = cfg.initialBurstCount;
+
+  function mountWithTimeout(frame) {
+    if (!frame || frame.dataset.mounted === '1') return false;
+    if (inFlight >= cfg.maxConcurrent) return false;
+    const ok = mountIframe(frame, /* eager */ false);
+    if (!ok) return false;
+    inFlight++;
+    let settled = false;
+    const ifr = frame.querySelector('iframe');
+    const t = setTimeout(() => { if (!settled) { settled = true; inFlight = Math.max(0, inFlight - 1); } }, cfg.loadTimeoutMs);
+    if (ifr) {
+      ifr.addEventListener('load', () => { if (!settled) { clearTimeout(t); settled = true; inFlight = Math.max(0, inFlight - 1); } }, { once: true });
+    } else {
+      clearTimeout(t); inFlight = Math.max(0, inFlight - 1);
+    }
+    return true;
+  }
+
+  function beat(ts) {
+    if (!lastBeat || (ts - lastBeat) >= cfg.heartbeatMs) {
+      lastBeat = ts;
+      let mountedThisBeat = 0;
+      while (mountedThisBeat < cfg.batchSize && nextIndex < frames.length) {
+        const before = inFlight;
+        const ok = mountWithTimeout(frames[nextIndex]);
+        if (ok && inFlight > before) { mountedThisBeat++; nextIndex++; }
+        else break;
+      }
+    }
+    if (nextIndex < frames.length) requestAnimationFrame(beat);
+  }
+  requestAnimationFrame(beat);
+
+  const watchdog = setInterval(() => {
+    if (nextIndex >= frames.length) { clearInterval(watchdog); return; }
+    let mountedThisTick = 0;
+    while (mountedThisTick < Math.max(1, Math.floor(desktopConfig.batchSize / 2)) && nextIndex < frames.length) {
+      const before = inFlight;
+      const ok = mountWithTimeout(frames[nextIndex]);
+      if (ok && inFlight > before) { mountedThisTick++; nextIndex++; }
+      else break;
+    }
+  }, desktopConfig.watchdogMs);
+
+  // Final sweep
+  setTimeout(() => {
+    for (let i = 0; i < frames.length; i++) {
+      if (frames[i].dataset.mounted !== '1') mountIframe(frames[i], /* eager */ true);
+    }
+  }, desktopConfig.finalSweepMs);
+}
+
+// Entry point: choose loader per device
+if (isSmall) {
+  mobileSequentialLoad();
+} else {
+  desktopHeartbeatLoad();
+}
+
+3) Remove any previous IntersectionObserver, recycling, or batch queue logic so only the code above controls loading.
+
+After changes, open the external preview on BOTH desktop and iPhone (use the full tab, not the embedded panel) and verify:
+- Desktop: first ~12 clips appear immediately; the rest fill in quickly without scrolling.
+- iPhone/Android: clips continue to appear one-by-one even if you never scroll; no permanent blanks.
+- Parallax/overlap unchanged; watermark and click-to-start audio unchanged.
+
+Reply only with:
+"STEP DONE — mobile sequential + desktop heartbeat loader applied and verified"
