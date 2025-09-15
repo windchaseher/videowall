@@ -1,0 +1,109 @@
+Prompt — Undo window; mobile = persistent staggered + freeze-nudge (desktop unchanged)
+Open /assets/js/main.js. Make the following precise changes. Do NOT touch desktop loader code, parallax, overlap, watermark, audio, or the Vimeo URL builder.
+
+1) Ensure this flag exists near the top (after 'use strict'):
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+2) REMOVE any previous “sliding window” code blocks added for mobile:
+   - Delete any code that declares variables like KEEP_BEHIND, KEEP_AHEAD, UNMOUNT_BEHIND, UNMOUNT_AHEAD, MAX_MOUNTED,
+     mountedSet/lastMountedAt, nearestIndexToViewportCenter(), updateWindow(), and/or timers setInterval(updateWindow, ...).
+   - Delete any functions that UNMOUNT or RECYCLE iframes on mobile (e.g., unmountIframe(), unmountFarthest()).
+   - Delete scroll/resize listeners associated with that sliding window logic.
+   Result: there must be NO unmounting of iframes on mobile.
+
+3) Immediately after the render loop (where each .frame is created and frame.dataset.embed is set),
+   add this MOBILE-ONLY persistent, staggered loader (desktop stays as-is):
+
+if (isSmall) {
+  const frames = Array.from(document.querySelectorAll('.frame'));
+
+  // Tunables (safe, simple)
+  const eagerCount         = Math.min(2, frames.length); // show life immediately
+  const interMountDelayMs  = 320;                         // spacing between mounts
+  const loadTimeoutMs      = 9000;                        // settle per mount even if 'load' stalls
+
+  function mountIframeEager(frame) {
+    if (!frame || frame.dataset.mounted === '1') return false;
+    const src = frame.dataset.embed; if (!src) return false;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = src;
+    iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    // IMPORTANT: no loading="lazy" on mobile
+    Object.assign(iframe.style, {
+      border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
+    });
+
+    frame.style.position = 'relative';
+    frame.appendChild(iframe);
+    frame.dataset.mounted = '1';
+
+    // Freeze-nudge registration (mobile only)
+    if (typeof registerPlayer === 'function') { registerPlayer(iframe); }
+
+    return iframe;
+  }
+
+  // 0) Tiny eager burst
+  (async () => {
+    for (let i = 0; i < eagerCount; i++) {
+      mountIframeEager(frames[i]);
+      await new Promise(r => setTimeout(r, 220));
+    }
+
+    // 1) Staggered persistent mounting (no unmounting)
+    for (let i = eagerCount; i < frames.length; i++) {
+      const f = frames[i];
+      if (f.dataset.mounted === '1') continue;
+
+      const ifr = mountIframeEager(f);
+
+      // Wait for load OR timeout, then spacing before next
+      await new Promise((resolve) => {
+        let settled = false;
+        const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, loadTimeoutMs);
+        if (ifr) {
+          ifr.addEventListener('load', () => {
+            if (!settled) { clearTimeout(t); settled = true; }
+            resolve();
+          }, { once: true });
+        } else {
+          clearTimeout(t); resolve();
+        }
+      });
+
+      await new Promise(r => setTimeout(r, interMountDelayMs));
+    }
+
+    // 2) Final sweep after 12s — if any frame missed, attach eagerly (no lazy)
+    setTimeout(() => {
+      frames.forEach(f => {
+        if (f.dataset.mounted !== '1') {
+          mountIframeEager(f);
+        }
+      });
+    }, 12000);
+  })();
+}
+
+4) Keep the existing DESKTOP loader EXACTLY as it is now. Do not modify or remove it.
+
+5) Freeze-nudge safety (no pausing):
+   - If the freeze-nudge “registry + interval” already exists, leave it as-is.
+   - If it’s missing, add this minimal MOBILE-ONLY wrapper around your existing nudge loop calls:
+     // Start nudge checks only on mobile
+     if (isSmall && typeof nudgeFrozenPlayers === 'function') {
+       // Example: setInterval(nudgeFrozenPlayers, FREEZE_CHECK_MS);  // keep whatever values are already defined
+     }
+
+6) Save and run in external preview (new tab). Do NOT modify HTML/CSS.
+
+Validation (mobile only):
+- No more unmounting when scrolling back up; previously loaded clips remain.
+- First two videos appear quickly; the rest attach over ~a few seconds without needing to scroll.
+- Previously frozen clips (TEW, Jump, Hybrid_CU) resume within ~1–3s if they stall (freeze-nudge).
+- Desktop behavior unchanged.
+
+Reply only with:
+"STEP DONE — window removed; mobile persistent staggered + nudge active"
+and list which files you touched.
