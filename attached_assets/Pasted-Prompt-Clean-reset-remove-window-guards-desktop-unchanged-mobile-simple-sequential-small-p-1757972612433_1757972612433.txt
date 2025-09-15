@@ -1,0 +1,179 @@
+Prompt — Clean reset (remove window/guards), desktop unchanged, mobile = simple sequential + small play/pause orchestrator
+1) BACK UP the current file:
+- Duplicate /assets/js/main.js to /assets/js/main.backup.js
+
+2) OPEN /assets/js/main.js and do a surgical cleanup:
+- REMOVE any and all code blocks related to:
+  • sliding window / mountedSet / unmountIframe / recycle / “window” variables
+  • MountGuard / FreezeGuard timers and registries
+  • previous IntersectionObserver or queue-based lazy loaders for mobile
+  • multiple overlapping intervals or watchdogs
+- IMPORTANT: KEEP the working DESKTOP loader logic exactly as-is (the one that’s performing well).
+- KEEP parallax, overlap clamps, watermark, audio click-to-start, and buildVimeoUrl as they are.
+
+3) At the top (after 'use strict'), ensure these exist:
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+4) MOBILE LOADER — simple, persistent, sequential (NO unmounting, NO lazy):
+Immediately after the render loop creates .clip/.frame and sets frame.dataset.embed (and wrap.dataset.title), insert this MOBILE-ONLY block:
+
+if (isSmall) {
+  const frames = Array.from(document.querySelectorAll('.frame'));
+  const eagerCount        = Math.min(1, frames.length);
+  const interDelayMs      = 380;   // spacing between mounts
+  const loadTimeoutMs     = 12000; // give iOS time
+
+  function mountIframe(frame) {
+    if (!frame || frame.dataset.mounted === '1') return null;
+    const src = frame.dataset.embed; if (!src) return null;
+    const ifr = document.createElement('iframe');
+    ifr.src = src;
+    ifr.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    // NO loading="lazy" on mobile
+    Object.assign(ifr.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+    frame.style.position = 'relative';
+    frame.appendChild(ifr);
+    frame.dataset.mounted = '1';
+    // register for playback orchestration (defined below)
+    if (typeof registerMobilePlayer === 'function') registerMobilePlayer(ifr);
+    return ifr;
+  }
+
+  (async () => {
+    // tiny eager burst
+    for (let i = 0; i < eagerCount; i++) {
+      mountIframe(frames[i]);
+      await new Promise(r => setTimeout(r, 220));
+    }
+    // strict sequential mounting
+    for (let i = eagerCount; i < frames.length; i++) {
+      const f = frames[i];
+      if (f.dataset.mounted === '1') continue;
+      const ifr = mountIframe(f);
+      await new Promise((resolve) => {
+        let settled = false;
+        const t = setTimeout(() => { if (!settled) { settled = true; resolve(); } }, loadTimeoutMs);
+        if (ifr) {
+          ifr.addEventListener('load', () => { if (!settled) { clearTimeout(t); settled = true; } resolve(); }, { once: true });
+        } else {
+          clearTimeout(t); resolve();
+        }
+      });
+      await new Promise(r => setTimeout(r, interDelayMs));
+    }
+  })();
+}
+
+5) MOBILE PLAYBACK ORCHESTRATOR — small, reliable, single instance:
+Place this AFTER the block above (desktop remains untouched). This does NOT unmount. It only pauses far-away clips and ensures nearby ones resume smoothly. It also prevents duplicate timers if the file re-runs.
+
+if (isSmall) {
+  // Avoid duplicates if hot-reloaded
+  window.__mobOrchestrator && window.__mobOrchestrator.stop && window.__mobOrchestrator.stop();
+
+  const registry = []; // { el, player, lastTime, lastUpdate, ensuring, ready }
+  const NEAR_PX   = 1400;  // within this distance from viewport center = "near"
+  const MAX_ACTIVE = 2;    // how many should be actively playing
+  const TICK_MS    = 1000; // cadence for orchestration
+  const RESUME_CHECK_MS = 500; // check progress after requesting play
+  const NUDGE_SECS = 0.08; // tiny seek if stalled
+
+  function registerMobilePlayer(ifr) {
+    if (!window.Vimeo || !window.Vimeo.Player) return;
+    try {
+      const p = new Vimeo.Player(ifr);
+      const rec = { el: ifr, player: p, lastTime: 0, lastUpdate: performance.now(), ensuring: false, ready: false };
+      registry.push(rec);
+      p.on('timeupdate', (data) => {
+        rec.lastTime   = (data && typeof data.seconds === 'number') ? data.seconds : rec.lastTime;
+        rec.lastUpdate = performance.now();
+        rec.ready = true;
+      });
+      // try to set moderate quality if available (non-fatal if not supported)
+      p.getQualities && p.getQualities().then(qs => {
+        if (Array.isArray(qs) && qs.includes('540p')) { p.setQuality('540p').catch(()=>{}); }
+      }).catch(()=>{});
+    } catch {}
+  }
+  // expose for the loader to call
+  window.registerMobilePlayer = registerMobilePlayer;
+
+  function distToCenter(el) {
+    const r = el.getBoundingClientRect();
+    const c = r.top + r.height/2;
+    return Math.abs(c - window.innerHeight/2);
+  }
+
+  async function ensurePlaying(rec) {
+    if (rec.ensuring) return;
+    rec.ensuring = true;
+    try {
+      const before = await rec.player.getCurrentTime().catch(()=>null);
+      await rec.player.play().catch(()=>{});
+      await new Promise(r => setTimeout(r, RESUME_CHECK_MS));
+      const after = await rec.player.getCurrentTime().catch(()=>null);
+      const progressed = (typeof before==='number' && typeof after==='number' && after > before + 0.01);
+      if (!progressed) {
+        // gentle nudge forward + play again
+        if (typeof before === 'number') {
+          const jitter = Math.random() * 0.02;
+          await rec.player.setCurrentTime(Math.max(0, before + NUDGE_SECS + jitter)).catch(()=>{});
+        }
+        await rec.player.play().catch(()=>{});
+      }
+    } catch {}
+    rec.ensuring = false;
+  }
+
+  async function ensurePaused(rec) {
+    try { await rec.player.pause().catch(()=>{}); } catch {}
+  }
+
+  function tick() {
+    if (!registry.length) return;
+    // Rank by distance to viewport center
+    const ranked = registry.filter(r => r.el && r.el.isConnected)
+      .map(r => ({ r, d: distToCenter(r.el) }))
+      .sort((a,b) => a.d - b.d);
+
+    // Choose near candidates
+    const actives = [];
+    for (const item of ranked) {
+      if (item.d <= NEAR_PX && actives.length < MAX_ACTIVE) actives.push(item.r);
+    }
+    // Apply
+    const activeSet = new Set(actives);
+    for (const { r } of ranked) {
+      if (activeSet.has(r)) ensurePlaying(r);
+      else ensurePaused(r);
+    }
+  }
+
+  const id = setInterval(tick, TICK_MS);
+  window.addEventListener('scroll', () => tick(), { passive: true });
+  window.addEventListener('resize', () => tick());
+  window.addEventListener('load', () => tick());
+  tick();
+
+  window.__mobOrchestrator = {
+    stop() { clearInterval(id); }
+  };
+}
+
+6) INDEX.HTML — ensure preconnects exist (keep if already present):
+In <head> add (or confirm present):
+  <link rel="preconnect" href="https://player.vimeo.com" crossorigin>
+  <link rel="preconnect" href="https://i.vimeocdn.com" crossorigin>
+  <link rel="preconnect" href="https://f.vimeocdn.com" crossorigin>
+
+7) DO NOT touch anything else. Desktop must remain unchanged.
+
+8) VERIFY (external preview on iPhone + desktop):
+- Desktop: unchanged (fast).
+- Mobile: first clip appears quickly; others attach over a few seconds without scrolling.
+- When scrolling, nearby clips resume playback quickly; far-away clips are paused (but not removed), so scrolling back up doesn’t create black gaps.
+- No code thrash: only ONE orchestrator interval present (check via window.__mobOrchestrator).
+
+Reply only with:
+"STEP DONE — codebase cleaned; desktop unchanged; mobile = sequential + play/pause orchestrator" 
+and list which files you touched.
