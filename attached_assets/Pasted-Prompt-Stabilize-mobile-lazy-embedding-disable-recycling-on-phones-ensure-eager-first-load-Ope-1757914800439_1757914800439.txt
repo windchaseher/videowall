@@ -1,0 +1,57 @@
+Prompt — Stabilize mobile lazy embedding (disable recycling on phones, ensure eager first load)
+
+Open /assets/js/main.js and update the lazy-embed block as follows:
+
+1) Keep preconnect tags in index.html (no change).
+
+2) Add/confirm this flag near the top (after 'use strict'):
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+3) Set device-specific limits (more conservative on phones):
+const frames = Array.from(document.querySelectorAll('.frame'));
+const maxConcurrentLoads = isSmall ? 2 : 8;
+const rootMarginY         = isSmall ? '1200px' : '2400px';
+
+4) REMOVE mobile recycling. Implement unmount helpers only for desktop:
+- If you previously had a Set "mounted" and unmountIframe/unmountFarthest logic, wrap ALL unmounting in:
+if (!isSmall) { /* existing unmount/recycling code here */ }
+- On mobile (isSmall === true), DO NOT unmount/recycle at all.
+
+5) Ensure at least one frame mounts immediately on EVERY device:
+frames.forEach((f, idx) => {
+  if (idx === 0) mountIframe(f);        // eager mount the first clip always
+});
+
+6) Keep IntersectionObserver simple and NEVER unmount on mobile:
+const io = ('IntersectionObserver' in window)
+  ? new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          mountIframe(e.target);
+          // Keep observing; do NOT unobserve here
+        } else {
+          // Desktop-only recycling (optional)
+          if (!isSmall) {
+            // If far off-screen, you may unmount here as before; otherwise do nothing
+          }
+        }
+      });
+    }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
+  : null;
+
+frames.forEach(f => { if (io) io.observe(f); else mountIframe(f); });
+
+7) IMPORTANT: In mountIframe(frame), prevent double-queueing and make “settle” safe:
+- Before pushing to queue, check it's not already queued/mounted.
+- When unmounting on desktop (if you keep that), make sure you never unmount a frame before its settle() has run.
+- Always decrement inFlight in settle(), and ensure a load timeout still fires even if the iframe was removed.
+
+Do NOT change Vimeo URL builder, watermark, audio, or parallax logic.
+
+After changes, open the external preview on iPhone and verify:
+- The very first clip appears quickly without refreshing.
+- As you scroll, additional clips appear (no permanent blanks).
+- Desktop still loads smoothly.
+
+Reply only with:
+"STEP DONE — mobile lazy embedding stabilized"

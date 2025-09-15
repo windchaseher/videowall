@@ -53,13 +53,10 @@
     return wrap;
   });
 
-  // --- Lazy embed with recycling ---
+  // --- Lazy embed stabilized ---
   const frames = Array.from(document.querySelectorAll('.frame'));
-
-  // Device-aware tuning
-  const maxConcurrentLoads = isSmall ? 2 : 6;        // fewer simultaneous handshakes on phones
-  const rootMarginY         = isSmall ? '900px' : '1800px'; // prefetch window
-  const maxMountedIframes   = isSmall ? 5 : 9;       // recycle when above this count
+  const maxConcurrentLoads = isSmall ? 2 : 8;
+  const rootMarginY         = isSmall ? '1200px' : '2400px';
 
   let inFlight = 0;
   const queue = [];
@@ -70,9 +67,15 @@
     const src = frame.dataset.embed;
     if (!src) return;
 
-    // If we're above the mounted limit, unmount the farthest frame first
-    if (mounted.size >= maxMountedIframes) {
-      unmountFarthest();
+    // Prevent double-queueing
+    if (queue.includes(frame)) return;
+
+    // Desktop-only recycling
+    if (!isSmall) {
+      const maxMountedIframes = 9;
+      if (mounted.size >= maxMountedIframes) {
+        unmountFarthest();
+      }
     }
 
     if (inFlight >= maxConcurrentLoads) {
@@ -108,26 +111,30 @@
   }
 
   function unmountIframe(frame) {
-    if (frame.dataset.mounted !== '1') return;
-    const iframe = frame.querySelector('iframe');
-    if (iframe) iframe.remove();
-    frame.dataset.mounted = '0';
-    mounted.delete(frame);
-    // keep placeholder
+    if (!isSmall) {
+      if (frame.dataset.mounted !== '1') return;
+      const iframe = frame.querySelector('iframe');
+      if (iframe) iframe.remove();
+      frame.dataset.mounted = '0';
+      mounted.delete(frame);
+      // keep placeholder
+    }
   }
 
   function unmountFarthest() {
-    if (!mounted.size) return;
-    // Unmount the frame whose center is farthest from viewport center
-    const viewportCenter = window.scrollY + window.innerHeight / 2;
-    let worst = null, worstDist = -1;
-    mounted.forEach(f => {
-      const r = f.getBoundingClientRect();
-      const center = window.scrollY + r.top + r.height / 2;
-      const d = Math.abs(center - viewportCenter);
-      if (d > worstDist) { worstDist = d; worst = f; }
-    });
-    if (worst) unmountIframe(worst);
+    if (!isSmall) {
+      if (!mounted.size) return;
+      // Unmount the frame whose center is farthest from viewport center
+      const viewportCenter = window.scrollY + window.innerHeight / 2;
+      let worst = null, worstDist = -1;
+      mounted.forEach(f => {
+        const r = f.getBoundingClientRect();
+        const center = window.scrollY + r.top + r.height / 2;
+        const d = Math.abs(center - viewportCenter);
+        if (d > worstDist) { worstDist = d; worst = f; }
+      });
+      if (worst) unmountIframe(worst);
+    }
   }
 
   const io = ('IntersectionObserver' in window)
@@ -135,23 +142,27 @@
         entries.forEach(e => {
           if (e.isIntersecting) {
             mountIframe(e.target);
-            // Keep observing so we can recycle when it scrolls far away
+            // Keep observing; do NOT unobserve here
           } else {
-            // If it moved far out of view, recycle it
-            const r = e.target.getBoundingClientRect();
-            const offscreen = r.top > window.innerHeight + 2 * parseInt(rootMarginY) ||
-                              r.bottom < -2 * parseInt(rootMarginY);
-            if (offscreen) unmountIframe(e.target);
+            // Desktop-only recycling (optional)
+            if (!isSmall) {
+              // If far off-screen, you may unmount here as before; otherwise do nothing
+              const r = e.target.getBoundingClientRect();
+              const offscreen = r.top > window.innerHeight + 2 * parseInt(rootMarginY) ||
+                                r.bottom < -2 * parseInt(rootMarginY);
+              if (offscreen) unmountIframe(e.target);
+            }
           }
         });
       }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
     : null;
 
-  // Desktop: eagerly mount the first 2 frames for instant paint
+  // Ensure at least one frame mounts immediately on EVERY device
   frames.forEach((f, idx) => {
-    if (!isSmall && idx < 2) mountIframe(f);
-    if (io) io.observe(f); else mountIframe(f);
+    if (idx === 0) mountIframe(f);        // eager mount the first clip always
   });
+
+  frames.forEach(f => { if (io) io.observe(f); else mountIframe(f); });
 
   // Subtle per-clip parallax
   let ticking = false;
