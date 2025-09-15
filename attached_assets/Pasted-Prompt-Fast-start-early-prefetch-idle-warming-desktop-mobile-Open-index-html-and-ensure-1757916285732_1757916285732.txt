@@ -1,0 +1,89 @@
+Prompt — “Fast start + early prefetch + idle warming” (desktop & mobile)
+Open /index.html and ensure these are in <head> (keep if already added):
+<link rel="preconnect" href="https://player.vimeo.com" crossorigin>
+<link rel="preconnect" href="https://i.vimeocdn.com" crossorigin>
+<link rel="preconnect" href="https://f.vimeocdn.com" crossorigin>
+<link rel="dns-prefetch" href="//player.vimeo.com">
+<link rel="dns-prefetch" href="//i.vimeocdn.com">
+<link rel="dns-prefetch" href="//f.vimeocdn.com">
+
+Now open /assets/js/main.js and adjust the lazy-embed logic:
+
+1) Near the top (after 'use strict'), confirm flags (add if missing):
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+
+2) In the lazy-embed config, set higher/earlier thresholds and a bigger eager burst:
+const frames = Array.from(document.querySelectorAll('.frame'));
+const maxConcurrentLoads = isSmall ? 3 : 10;           // more parallel loads
+const rootMarginY         = isSmall ? '1600px' : '3200px'; // start earlier
+const eagerMountCount     = isSmall ? 3 : 6;           // instant start clips
+// Keep recycling disabled on mobile. If you previously had recycling, wrap all unmount logic with: if (!isSmall) { ... }
+
+3) Ensure the first N frames mount immediately:
+frames.forEach((f, idx) => {
+  if (idx < eagerMountCount) mountIframe(f);
+});
+
+4) Use IntersectionObserver but DO NOT unobserve on intersect (we want multiple chances):
+const io = ('IntersectionObserver' in window)
+  ? new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) mountIframe(e.target);
+      });
+    }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
+  : null;
+
+frames.forEach((f) => { if (io) io.observe(f); else mountIframe(f); });
+
+5) Add idle-time warming so a few upcoming iframes mount even before they intersect:
+const warmBufferAhead = isSmall ? 2 : 4;         // how many extra to keep mounted beyond what's visible
+const warmIntervalMs  = 900;                     // gentle pace to avoid jank
+
+function warmUpNext() {
+  // Find the highest index frame that is already mounted or intersecting, then pre-mount the next few.
+  let topIdx = -1;
+  frames.forEach((f, idx) => { if (f.dataset.mounted === '1') topIdx = Math.max(topIdx, idx); });
+  // If nothing mounted yet, rely on eagerMountCount — nothing else to do.
+  if (topIdx < 0) return;
+
+  for (let i = 1; i <= warmBufferAhead; i++) {
+    const target = frames[topIdx + i];
+    if (target && target.dataset.mounted !== '1') mountIframe(target);
+  }
+}
+
+let warmTimer = null;
+function scheduleWarm() {
+  if (warmTimer) return;
+  // Prefer requestIdleCallback when available, else timeout
+  if ('requestIdleCallback' in window) {
+    warmTimer = requestIdleCallback(() => { warmUpNext(); warmTimer = null; }, { timeout: warmIntervalMs });
+  } else {
+    warmTimer = setTimeout(() => { warmUpNext(); warmTimer = null; }, warmIntervalMs);
+  }
+}
+
+// Run warm-up on load/scroll/settle:
+window.addEventListener('load', scheduleWarm, { passive: true });
+window.addEventListener('scroll', scheduleWarm, { passive: true });
+window.addEventListener('resize', scheduleWarm);
+
+6) In mountIframe(frame), add guards to prevent double queueing and ensure each attempt settles quickly:
+- Before queueing: if (frame.dataset.mounted === '1' || frame.dataset.queued === '1') return;
+- After you start a load: frame.dataset.queued = '0';
+- Keep a short timeout (e.g., 7s) that decrements inFlight and lets the next mount proceed even if the 'load' event never fires.
+
+7) Do NOT change:
+- Vimeo URL builder (must append autoplay=1&muted=1&loop=1&background=1),
+- Watermark,
+- Audio click-to-start,
+- Parallax math,
+- Overlap clamping (leave as previously tuned).
+
+After changes, verify on external preview:
+- Desktop: first 4–6 clips appear instantly; others load earlier as you scroll.
+- Mobile: first 3 appear quickly; the next ones show up before you reach them.
+- No permanent blanks; scrolling remains smooth.
+
+Reply only with:
+"STEP DONE — fast start + early prefetch + idle warming applied and verified"

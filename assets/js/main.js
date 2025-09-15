@@ -55,8 +55,9 @@
 
   // --- Lazy embed stabilized ---
   const frames = Array.from(document.querySelectorAll('.frame'));
-  const maxConcurrentLoads = isSmall ? 2 : 8;
-  const rootMarginY         = isSmall ? '1200px' : '2400px';
+  const maxConcurrentLoads = isSmall ? 3 : 10;           // more parallel loads
+  const rootMarginY         = isSmall ? '1600px' : '3200px'; // start earlier
+  const eagerMountCount     = isSmall ? 3 : 6;           // instant start clips
   const retryCount = new WeakMap(); // frame -> number
 
   let inFlight = 0;
@@ -69,7 +70,7 @@
     if (!src) return;
 
     // Prevent duplicate queueing
-    if (frame.dataset.queued === '1') return;
+    if (frame.dataset.mounted === '1' || frame.dataset.queued === '1') return;
 
     // Desktop-only recycling
     if (!isSmall) {
@@ -123,7 +124,7 @@
         // Give up and settle so queue continues
         settle();
       }
-    }, 8000);
+    }, 7000);
 
     iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
   }
@@ -167,31 +168,49 @@
   const io = ('IntersectionObserver' in window)
     ? new IntersectionObserver((entries) => {
         entries.forEach(e => {
-          if (e.isIntersecting) {
-            mountIframe(e.target);
-            // Keep observing; do NOT unobserve here
-          } else {
-            // Desktop-only recycling (optional)
-            if (!isSmall) {
-              // If far off-screen, you may unmount here as before; otherwise do nothing
-              if (canRecycle(e.target)) {
-                const r = e.target.getBoundingClientRect();
-                const offscreen = r.top > window.innerHeight + 2 * parseInt(rootMarginY) ||
-                                  r.bottom < -2 * parseInt(rootMarginY);
-                if (offscreen) unmountIframe(e.target);
-              }
-            }
-          }
+          if (e.isIntersecting) mountIframe(e.target);
         });
       }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
     : null;
 
-  // Ensure at least one frame mounts immediately on EVERY device
   frames.forEach((f, idx) => {
-    if (idx === 0) mountIframe(f);        // eager mount the first clip always
+    if (idx < eagerMountCount) mountIframe(f);
   });
 
-  frames.forEach(f => { if (io) io.observe(f); else mountIframe(f); });
+  frames.forEach((f) => { if (io) io.observe(f); else mountIframe(f); });
+
+  // Add idle-time warming so a few upcoming iframes mount even before they intersect
+  const warmBufferAhead = isSmall ? 2 : 4;         // how many extra to keep mounted beyond what's visible
+  const warmIntervalMs  = 900;                     // gentle pace to avoid jank
+
+  function warmUpNext() {
+    // Find the highest index frame that is already mounted or intersecting, then pre-mount the next few.
+    let topIdx = -1;
+    frames.forEach((f, idx) => { if (f.dataset.mounted === '1') topIdx = Math.max(topIdx, idx); });
+    // If nothing mounted yet, rely on eagerMountCount — nothing else to do.
+    if (topIdx < 0) return;
+
+    for (let i = 1; i <= warmBufferAhead; i++) {
+      const target = frames[topIdx + i];
+      if (target && target.dataset.mounted !== '1') mountIframe(target);
+    }
+  }
+
+  let warmTimer = null;
+  function scheduleWarm() {
+    if (warmTimer) return;
+    // Prefer requestIdleCallback when available, else timeout
+    if ('requestIdleCallback' in window) {
+      warmTimer = requestIdleCallback(() => { warmUpNext(); warmTimer = null; }, { timeout: warmIntervalMs });
+    } else {
+      warmTimer = setTimeout(() => { warmUpNext(); warmTimer = null; }, warmIntervalMs);
+    }
+  }
+
+  // Run warm-up on load/scroll/settle:
+  window.addEventListener('load', scheduleWarm, { passive: true });
+  window.addEventListener('scroll', scheduleWarm, { passive: true });
+  window.addEventListener('resize', scheduleWarm);
 
   // Add an "end-of-page eager mount" that triggers when close to the bottom and also when only a few remain
   function eagerMountTail() {
