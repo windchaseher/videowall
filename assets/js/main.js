@@ -53,183 +53,115 @@
     return wrap;
   });
 
-  // --- Lazy embed stabilized ---
+  // ---- STAGGERED EAGER LOAD (burst + timed batches) ----
   const frames = Array.from(document.querySelectorAll('.frame'));
-  const maxConcurrentLoads = isSmall ? 3 : 10;           // more parallel loads
-  const rootMarginY         = isSmall ? '1600px' : '3200px'; // start earlier
-  const eagerMountCount     = isSmall ? 3 : 6;           // instant start clips
-  const retryCount = new WeakMap(); // frame -> number
+
+  // Tunables
+  const initialBurstCount   = isSmall ? 6 : 8;  // load these immediately
+  const batchSize           = isSmall ? 3 : 4;  // then load this many per tick
+  const tickMs              = 700;              // time between batches (ms)
+  const maxConcurrentLoads  = isSmall ? 3 : 10; // cap simultaneous iframes
+  const loadTimeoutMs       = 7000;             // consider a load "settled" after this
 
   let inFlight = 0;
-  const queue = [];
-  const mounted = new Set(); // track frames that currently have an iframe
+  let nextIndex = initialBurstCount; // after the burst, continue here
+  let batchTimer = null;
 
+  // Mount one frame if allowed by concurrency
   function mountIframe(frame) {
     if (!frame || frame.dataset.mounted === '1') return;
     const src = frame.dataset.embed;
     if (!src) return;
 
-    // Prevent duplicate queueing
-    if (frame.dataset.mounted === '1' || frame.dataset.queued === '1') return;
+    if (inFlight >= maxConcurrentLoads) return; // caller will retry next tick
 
-    // Desktop-only recycling
-    if (!isSmall) {
-      const maxMountedIframes = 9;
-      if (mounted.size >= maxMountedIframes) {
-        unmountFarthest();
-      }
-    }
-
-    if (inFlight >= maxConcurrentLoads) {
-      frame.dataset.queued = '1';
-      queue.push(frame);
-      return;
-    }
-    frame.dataset.queued = '0';
     inFlight++;
 
     const iframe = document.createElement('iframe');
     iframe.src = src;
     iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
     iframe.setAttribute('loading', 'lazy');
-    Object.assign(iframe.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+    Object.assign(iframe.style, {
+      border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
+    });
 
     frame.style.position = 'relative';
     frame.appendChild(iframe);
     frame.dataset.mounted = '1';
-    mounted.add(frame);
 
     let settled = false;
     const settle = () => {
       if (settled) return;
       settled = true;
       inFlight = Math.max(0, inFlight - 1);
-      const next = queue.shift();
-      if (next) mountIframe(next);
     };
 
-    // Retry if load doesn't fire in time
-    const maxRetries = 2;
-    const t = setTimeout(() => {
-      if (settled) return;
-      const n = (retryCount.get(frame) || 0);
-      if (n < maxRetries) {
-        // Tear down and retry with small delay
-        try { iframe.remove(); } catch {}
-        frame.dataset.mounted = '0';
-        retryCount.set(frame, n + 1);
-        inFlight = Math.max(0, inFlight - 1);
-        setTimeout(() => mountIframe(frame), 400 + n * 400);
-      } else {
-        // Give up and settle so queue continues
-        settle();
-      }
-    }, 7000);
-
+    const t = setTimeout(settle, loadTimeoutMs);
     iframe.addEventListener('load', () => { clearTimeout(t); settle(); }, { once: true });
   }
 
-  function unmountIframe(frame) {
-    if (!isSmall) {
-      if (frame.dataset.mounted !== '1') return;
-      const iframe = frame.querySelector('iframe');
-      if (iframe) iframe.remove();
-      frame.dataset.mounted = '0';
-      mounted.delete(frame);
-      // keep placeholder
+  // Initial burst (top-of-page feels instant)
+  frames.slice(0, initialBurstCount).forEach(f => mountIframe(f));
+
+  // Timed batches keep loading even without scrolling
+  function loadNextBatch() {
+    // If everything is mounted, stop.
+    if (nextIndex >= frames.length) {
+      if (batchTimer) { clearInterval(batchTimer); batchTimer = null; }
+      return;
+    }
+
+    let mountedThisTick = 0;
+    // Try to mount up to batchSize frames this tick, respecting concurrency
+    while (mountedThisTick < batchSize && nextIndex < frames.length) {
+      const f = frames[nextIndex];
+      const beforeInFlight = inFlight;
+      mountIframe(f);
+      // Only count it if we actually started it (inFlight increased)
+      if (inFlight > beforeInFlight) {
+        mountedThisTick++;
+        nextIndex++;
+      } else {
+        // Concurrency full; break and let next tick try again
+        break;
+      }
     }
   }
 
-  function canRecycle(frame) {
-    const hasRetry = retryCount.get(frame) > 0;
-    if (hasRetry) return false;
-    const r = frame.getBoundingClientRect();
-    const far = (r.top > window.innerHeight + 4000) || (r.bottom < -4000);
-    return far;
+  // Start the interval; also warm on idle to feel snappier
+  if (!batchTimer) batchTimer = setInterval(loadNextBatch, tickMs);
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(() => loadNextBatch(), { timeout: tickMs });
   }
 
-  function unmountFarthest() {
-    if (!isSmall) {
-      if (!mounted.size) return;
-      // Unmount the frame whose center is farthest from viewport center
-      const viewportCenter = window.scrollY + window.innerHeight / 2;
-      let worst = null, worstDist = -1;
-      mounted.forEach(f => {
-        if (!canRecycle(f)) return;
-        const r = f.getBoundingClientRect();
-        const center = window.scrollY + r.top + r.height / 2;
-        const d = Math.abs(center - viewportCenter);
-        if (d > worstDist) { worstDist = d; worst = f; }
-      });
-      if (worst) unmountIframe(worst);
+  // Last-resort safety: after ~12s, force-mount anything left (ignores concurrency)
+  setTimeout(() => {
+    for (let i = 0; i < frames.length; i++) {
+      if (frames[i].dataset.mounted !== '1') {
+        // Try with cap; if still blocked, attach directly
+        const before = inFlight;
+        mountIframe(frames[i]);
+        if (inFlight === before) {
+          const iframe = document.createElement('iframe');
+          iframe.src = frames[i].dataset.embed;
+          iframe.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+          iframe.setAttribute('loading', 'lazy');
+          Object.assign(iframe.style, {
+            border:'0', position:'absolute', inset:'0', width:'100%', height:'100%'
+          });
+          frames[i].style.position = 'relative';
+          frames[i].appendChild(iframe);
+          frames[i].dataset.mounted = '1';
+        }
+      }
     }
-  }
+  }, 12000);
 
-  const io = ('IntersectionObserver' in window)
-    ? new IntersectionObserver((entries) => {
-        entries.forEach(e => {
-          if (e.isIntersecting) mountIframe(e.target);
-        });
-      }, { root: null, rootMargin: `${rootMarginY} 0px`, threshold: 0.01 })
-    : null;
-
-  frames.forEach((f, idx) => {
-    if (idx < eagerMountCount) mountIframe(f);
-  });
-
-  frames.forEach((f) => { if (io) io.observe(f); else mountIframe(f); });
-
-  // Add idle-time warming so a few upcoming iframes mount even before they intersect
-  const warmBufferAhead = isSmall ? 2 : 4;         // how many extra to keep mounted beyond what's visible
-  const warmIntervalMs  = 900;                     // gentle pace to avoid jank
-
-  function warmUpNext() {
-    // Find the highest index frame that is already mounted or intersecting, then pre-mount the next few.
-    let topIdx = -1;
-    frames.forEach((f, idx) => { if (f.dataset.mounted === '1') topIdx = Math.max(topIdx, idx); });
-    // If nothing mounted yet, rely on eagerMountCount — nothing else to do.
-    if (topIdx < 0) return;
-
-    for (let i = 1; i <= warmBufferAhead; i++) {
-      const target = frames[topIdx + i];
-      if (target && target.dataset.mounted !== '1') mountIframe(target);
-    }
-  }
-
-  let warmTimer = null;
-  function scheduleWarm() {
-    if (warmTimer) return;
-    // Prefer requestIdleCallback when available, else timeout
-    if ('requestIdleCallback' in window) {
-      warmTimer = requestIdleCallback(() => { warmUpNext(); warmTimer = null; }, { timeout: warmIntervalMs });
-    } else {
-      warmTimer = setTimeout(() => { warmUpNext(); warmTimer = null; }, warmIntervalMs);
-    }
-  }
-
-  // Run warm-up on load/scroll/settle:
-  window.addEventListener('load', scheduleWarm, { passive: true });
-  window.addEventListener('scroll', scheduleWarm, { passive: true });
-  window.addEventListener('resize', scheduleWarm);
-
-  // Add an "end-of-page eager mount" that triggers when close to the bottom and also when only a few remain
-  function eagerMountTail() {
-    const doc = document.documentElement;
-    const distanceToBottom = (doc.scrollHeight - doc.scrollTop - window.innerHeight);
-    const remaining = frames.filter(f => f.dataset.mounted !== '1');
-    if (remaining.length && (remaining.length <= 4 || distanceToBottom < 2000)) {
-      remaining.forEach(f => mountIframe(f));
-    }
-  }
-  window.addEventListener('scroll', eagerMountTail, { passive: true });
-  window.addEventListener('load', eagerMountTail);
-  window.addEventListener('resize', eagerMountTail);
-
-  // Add a tiny diagnostic helper
+  // Optional: simple diagnostic in console
   window.reportVimeoMounts = () => {
-    const unmounted = frames.filter(f => f.dataset.mounted !== '1').length;
-    const queued = frames.filter(f => f.dataset.queued === '1').length;
-    return { total: frames.length, unmounted, queued };
+    const total = frames.length;
+    const mounted = frames.filter(f => f.dataset.mounted === '1').length;
+    return { total, mounted, inFlight };
   };
 
   // Subtle per-clip parallax
