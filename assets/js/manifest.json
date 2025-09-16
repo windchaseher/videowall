@@ -11,7 +11,7 @@
 
     { "title": "1D6S — Underwater",    "embedUrl": "https://player.vimeo.com/video/1118451441", "parallax": 0.20, "overlap": 0 },
     { "title": "1D6S — Shore Rock",    "embedUrl": "https://player.vimeo.com/video/1118451437", "parallax": 0.32, "overlap": 0 },
-    { "title": "1D6S — Floater",       "embedUrl": "https://player.vimeo.com/video/1118451434", "parallax": 0.24, "overlap": 0 },
+    { "title": "1D6S — Floater",       "embedUrl": "https://player.vimeo.com/video/1118451434", "parallax": 0.35, "overlap": 0 },
 
     { "title": "True Colors — Stairs (1.1)",   "embedUrl": "https://player.vimeo.com/video/1118453045", "parallax": 0.38, "overlap": 0, "aspect": 1.85 },
     { "title": "True Colors — Bar (1.1)",      "embedUrl": "https://player.vimeo.com/video/1118453032", "parallax": 0.24, "overlap": 0, "aspect": 1.85 },
