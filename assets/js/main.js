@@ -4,6 +4,7 @@
   const isSmall = window.matchMedia('(max-width: 768px)').matches;
   window.__BLACKGUARD_ENABLED ??= true; // kill switch
   window.__STALL_NUDGE_ENABLED ??= true;
+  window.__OVERLAP_ENABLED ??= true;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -40,10 +41,12 @@
   const clips = manifest.clips.map((c, i) => {
     const wrap = document.createElement('section');
     wrap.className = 'clip';
-    wrap.dataset.title = (c.title || '');
-    let ov = (typeof c.overlap === 'number' ? c.overlap : -10);
-    ov = Math.max(isSmall ? -8 : -12, Math.min(isSmall ? -4 : -6, ov));
-    if (i > 0) wrap.style.marginTop = `${ov}px`;
+    
+    // Read overlap (pixels) from manifest; store for debug
+    const ov = (typeof c.overlap === 'number') ? c.overlap : parseFloat(c.overlap || '0') || 0;
+    wrap.dataset.title = c.title || '';
+    wrap.dataset.overlap = String(ov);
+    
     wrap.style.marginBottom = '4px';
     
     const baseSpeed = Number(c.parallax || 0);
@@ -56,11 +59,29 @@
     const finalUrl = buildVimeoUrl(c.embedUrl);
     frame.dataset.embed = finalUrl; // defer actual iframe creation
     frame.style.background = '#000';
+    
+    // Apply overlap to the INNER frame (no conflict with parallax on wrapper)
+    if (window.__OVERLAP_ENABLED) {
+      // Negative ov pulls the frame upward; positive pushes it down
+      const prev = frame.style.transform || '';
+      // Ensure we don't overwrite any existing frame transform (rare); append translate
+      frame.style.transform = `${prev ? prev + ' ' : ''}translate3d(0, ${ov}px, 0)`;
+      frame.style.willChange = 'transform';
+    }
+    
     wrap.appendChild(frame);
     
     reel.appendChild(wrap);
     return wrap;
   });
+
+  // Debug logging for overlap values
+  try {
+    const rows = Array.from(document.querySelectorAll('.clip')).map((el,i) => ({
+      idx: i, title: el.dataset.title || '', overlap: el.dataset.overlap
+    }));
+    console.table(rows);
+  } catch {}
 
   // MOBILE LOADER — simple, persistent, sequential (NO unmounting, NO lazy)
   if (isSmall) {

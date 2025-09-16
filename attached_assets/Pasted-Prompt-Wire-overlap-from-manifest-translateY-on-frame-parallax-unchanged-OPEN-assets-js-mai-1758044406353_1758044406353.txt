@@ -1,0 +1,63 @@
+Prompt — “Wire overlap from manifest (translateY on .frame, parallax unchanged)”
+OPEN /assets/js/main.js
+
+Goal:
+Make manifest.json "overlap" values actually shift clips vertically.
+Apply overlap as translateY on the INNER `.frame` so it never conflicts with parallax (which transforms the OUTER `.clip`).
+
+Steps:
+
+1) Add a kill switch near the top (after 'use strict'):
+window.__OVERLAP_ENABLED ??= true;
+
+2) In the render-from-manifest section (where each clip DOM is built), locate code similar to:
+  const wrap = document.createElement('section'); // class 'clip'
+  wrap.className = 'clip';
+  const frame = document.createElement('div');    // class 'frame'
+  frame.className = 'frame';
+  // ... set frame.dataset.embed = buildVimeoUrl(c.embedUrl) ...
+  // ... wrap.appendChild(frame) ...
+
+Immediately after creating `frame` (before appending), read and apply overlap:
+
+  // Read overlap (pixels) from manifest; store for debug
+  const ov = (typeof c.overlap === 'number') ? c.overlap : parseFloat(c.overlap || '0') || 0;
+  wrap.dataset.title = c.title || '';
+  wrap.dataset.overlap = String(ov);
+
+  // Apply overlap to the INNER frame (no conflict with parallax on wrapper)
+  if (window.__OVERLAP_ENABLED) {
+    // Negative ov pulls the frame upward; positive pushes it down
+    const prev = frame.style.transform || '';
+    // Ensure we don't overwrite any existing frame transform (rare); append translate
+    frame.style.transform = `${prev ? prev + ' ' : ''}translate3d(0, ${ov}px, 0)`;
+    frame.style.willChange = 'transform';
+  }
+
+3) Do NOT modify the parallax code. It must continue to set `transform` ONLY on `.clip` wrappers.
+
+4) (Optional quick sanity print; add once at end of render):
+  try {
+    const rows = Array.from(document.querySelectorAll('.clip')).map((el,i) => ({
+      idx: i, title: el.dataset.title || '', overlap: el.dataset.overlap
+    }));
+    console.table(rows);
+  } catch {}
+
+5) SAVE /assets/js/main.js.
+
+6) OPEN /assets/css/style.css (or wherever `.frame` styles live):
+   - Ensure there is NO other hard-coded `transform` on `.frame`. Remove it if present.
+   - (No change needed if `.frame` didn’t have a transform.)
+
+7) OPEN /index.html and bump the cache-buster on main.js (increment the `?v=` number on the script tag) so the new JS is loaded.
+
+Validation (external preview, mobile & desktop):
+- HYBRID_FIELD / HYBRID_SKY / HYBRID_HOUSE visibly shift according to their `overlap` values already in manifest.
+- Parallax still works exactly as before (on `.clip`).
+- If you need to compare quickly, disable the feature at runtime:
+    window.__OVERLAP_ENABLED = false; location.reload();
+
+Reply only with:
+"STEP DONE — overlap wired to .frame via translateY; parallax unchanged"
+and list files you touched.
