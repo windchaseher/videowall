@@ -1,0 +1,167 @@
+Prompt for your Replit Agent — “Add BlackGuard (mobile only), reversible”
+Paste this to the agent:
+Open /assets/js/main.js.
+
+1) Make a backup:
+- Duplicate /assets/js/main.js to /assets/js/main.backup.js
+
+2) Near the top (after 'use strict'), ensure these lines exist:
+const isSmall = window.matchMedia('(max-width: 768px)').matches;
+window.__BLACKGUARD_ENABLED ??= true; // kill switch
+
+3) Append the following EXACT code at the bottom of main.js.
+Do NOT modify or remove the existing orchestrator or any desktop code.
+
+if (isSmall && window.__BLACKGUARD_ENABLED) {
+  // Stop any prior instance (hot reload safety)
+  if (window.__blackGuard && typeof window.__blackGuard.stop === 'function') {
+    window.__blackGuard.stop();
+  }
+
+  const BG = {
+    recs: new Map(),            // iframe -> record
+    TICK_MS: 1200,              // sweep cadence
+    BLACK_MS: 6000,             // no timeupdate within 6s of mount => BLACK
+    ACTION_COOLDOWN_MS: 1500,   // min time between actions for the same clip
+    REMOUNT_COOLDOWN_MS: 30000  // min 30s between remounts per clip
+  };
+
+  function getRec(ifr) {
+    let r = BG.recs.get(ifr);
+    if (!r) {
+      r = {
+        ifr,
+        player: null,
+        mountedAt: performance.now(),
+        firstTimeUpdateAt: 0,
+        lastActionAt: 0,
+        remounts: 0,
+        lastRemountAt: 0
+      };
+      try {
+        r.player = new Vimeo.Player(ifr);
+        r.player.on('timeupdate', () => {
+          if (!r.firstTimeUpdateAt) r.firstTimeUpdateAt = performance.now();
+        });
+      } catch (_) {}
+      BG.recs.set(ifr, r);
+    }
+    return r;
+  }
+
+  function seed() {
+    document.querySelectorAll('.frame iframe').forEach(ifr => getRec(ifr));
+  }
+
+  async function apiPlay(rec) {
+    try { await rec.player.play().catch(()=>{}); } catch {}
+  }
+
+  function hardRemount(rec) {
+    const now = performance.now();
+    if (now - rec.lastRemountAt < BG.REMOUNT_COOLDOWN_MS) return false;
+    const frame = rec.ifr && rec.ifr.parentElement;
+    if (!frame) return false;
+
+    try { rec.ifr.remove(); } catch {}
+    const src = frame.dataset.embed;
+    if (!src) return false;
+
+    const ifr = document.createElement('iframe');
+    ifr.src = src;
+    ifr.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    Object.assign(ifr.style, { border:'0', position:'absolute', inset:'0', width:'100%', height:'100%' });
+    frame.style.position = 'relative';
+    frame.appendChild(ifr);
+    frame.dataset.mounted = '1';
+
+    const newRec = getRec(ifr);
+    newRec.remounts = (rec.remounts || 0) + 1;
+    newRec.lastRemountAt = now;
+    BG.recs.delete(rec.ifr);
+    return true;
+  }
+
+  function stateOf(rec) {
+    const now = performance.now();
+    if (!rec.ifr || !rec.ifr.isConnected) return 'MISSING';
+    if (!rec.firstTimeUpdateAt && (now - rec.mountedAt) > BG.BLACK_MS) return 'BLACK';
+    return 'OK';
+  }
+
+  let id = null;
+  async function tick() {
+    seed(); // pick up any newly mounted iframes
+    const now = performance.now();
+
+    BG.recs.forEach(async (rec) => {
+      const st = stateOf(rec);
+      if (st !== 'BLACK') return;
+
+      if (now - rec.lastActionAt < BG.ACTION_COOLDOWN_MS) return;
+      rec.lastActionAt = now;
+
+      // 1) Try API play() first
+      await apiPlay(rec);
+
+      // If still black next sweep, remount (guarded by cooldown)
+      // We check "still black" implicitly on the next tick via stateOf(rec)
+      // This tick only triggers play(); the next tick may remount if needed.
+    });
+  }
+
+  // On the NEXT tick (after a prior play() attempt), if still BLACK, remount
+  async function remountPass() {
+    const now = performance.now();
+    BG.recs.forEach((rec) => {
+      const st = stateOf(rec);
+      if (st !== 'BLACK') return;
+      if (now - rec.lastActionAt < BG.ACTION_COOLDOWN_MS) return;
+      rec.lastActionAt = now;
+      hardRemount(rec);
+    });
+  }
+
+  function start() {
+    seed();
+    const main = setInterval(tick, BG.TICK_MS);
+    const rmnt = setInterval(remountPass, BG.TICK_MS * 2); // slower than main tick
+    window.addEventListener('load', tick);
+    window.addEventListener('scroll', () => tick(), { passive: true });
+    window.addEventListener('resize', () => tick());
+
+    window.__blackGuard = {
+      stop() { clearInterval(main); clearInterval(rmnt); }
+    };
+  }
+
+  start();
+
+  // Console helper: see how many are alive vs black
+  window.mobBlack = () => {
+    let total = 0, alive = 0, black = 0;
+    BG.recs.forEach(rec => {
+      total++;
+      if (rec.firstTimeUpdateAt) alive++; else black++;
+    });
+    const out = { total, alive, black };
+    console.log('BlackGuard', out);
+    return out;
+  };
+}
+
+4) Save. If index.html uses a cache-buster on main.js (e.g., ?v=…), bump it.
+
+5) Validation (mobile external preview):
+- Run `mobBlack()` in console. You should see counts like { total: 24, alive: M, black: B }.
+- Any still-black clips should flip to alive within a few seconds (either via play() or a remount).
+- Orchestrator continues to control who’s playing; BlackGuard does not pause any video.
+
+6) Rollback / kill switch:
+- To disable instantly, open console and run:
+  window.__BLACKGUARD_ENABLED = false; window.__blackGuard?.stop?.(); location.reload();
+- Or set `window.__BLACKGUARD_ENABLED = false;` near the top of main.js and reload.
+
+Reply only with:
+"STEP DONE — BlackGuard added (mobile only), orchestrator unchanged, kill switch wired"
+and list files touched.
