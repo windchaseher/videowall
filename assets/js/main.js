@@ -7,7 +7,7 @@
   window.__OVERLAP_ENABLED ??= true;
   window.__PARALLAX_GAIN ??= 2.4;   // increase to 3.0 later if you want more punch
   window.__PARALLAX_ENABLED ??= true;
-  window.__PARALLAX_SMOOTH ??= 0.18;   // easing factor; 0.12–0.25 is typical
+  window.__PARALLAX_SMOOTH ??= 0.24;   // safe bump (you can try 0.26 later)
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
