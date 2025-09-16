@@ -7,6 +7,7 @@
   window.__OVERLAP_ENABLED ??= true;
   window.__PARALLAX_GAIN ??= 2.4;   // increase to 3.0 later if you want more punch
   window.__PARALLAX_ENABLED ??= true;
+  window.__PARALLAX_SMOOTH ??= 0.18;   // easing factor; 0.12–0.25 is typical
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -472,8 +473,13 @@
 
       // Apply transform on the wrapper (parallax element)
       // Round to 0.5px to keep GPU-friendly but stable
-      const rounded = Math.round(offsetPx * 2) / 2;
-      wrap.style.transform = `translate3d(0, ${rounded}px, 0)`;
+      const target = Math.round(offsetPx * 2) / 2;
+      const prev   = wrap.__parallaxY ?? target;
+      const alpha  = window.__PARALLAX_SMOOTH || 0.18;
+      const next   = prev + (target - prev) * alpha;
+
+      wrap.__parallaxY = next;
+      wrap.style.transform = `translate3d(0, ${next}px, 0)`;
       wrap.style.willChange = 'transform';
     });
     ticking = false;
