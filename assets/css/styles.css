@@ -14,15 +14,10 @@ html, body { margin: 0; padding: 0; background: #000; overflow-x: hidden; }
   border: 0;
   pointer-events: none;       /* no HUD/controls interaction */
 }
-.watermark {
-  position: fixed;
-  right: 16px;
-  bottom: 12px;
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.65 !important; /* force this to win */
-  color: rgba(255,255,255,0.95);
-  text-shadow: 0 1px 2px rgba(0,0,0,0.35);
-  pointer-events: none;
-  z-index: 9999;
+#watermark {
+  position: fixed; right: 14px; bottom: 10px;
+  opacity: .6; color: #fff;
+  font: 500 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  letter-spacing: .02em;
+  user-select: none; pointer-events: none; z-index: 9999;
 }
