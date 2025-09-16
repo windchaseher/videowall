@@ -3,7 +3,6 @@
 
   const isSmall = window.matchMedia('(max-width: 768px)').matches;
   window.__BLACKGUARD_ENABLED ??= true; // kill switch
-  window.__STALL_NUDGE_ENABLED ??= true;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -124,52 +123,6 @@
     const NUDGE_SECS     = 0.10;  // slightly stronger resume nudge
     const SOFT_KEEP_MS   = 1500;  // keep newly-started clips alive briefly
 
-    // Registry of progress per active iframe
-    const __mobReg = new WeakMap(); // iframe -> record
-
-    function regFor(ifr){
-      let rec = __mobReg.get(ifr);
-      if (!rec) {
-        rec = {
-          player: null,
-          firstUpdateAt: 0,
-          lastUpdateAt: 0,
-          lastActionAt: 0,
-          apiCount: 0,
-          apiWindowStart: performance.now()
-        };
-        try {
-          rec.player = new Vimeo.Player(ifr);
-          rec.player.on('timeupdate', () => {
-            rec.firstUpdateAt ||= performance.now();
-            rec.lastUpdateAt = performance.now();
-          });
-        } catch(_) {}
-        __mobReg.set(ifr, rec);
-      }
-      return rec;
-    }
-
-    async function apiPlay(p){ try { await p.play().catch(()=>{}); } catch {} }
-    async function nudgeForward(p, step){
-      try {
-        const cur = await p.getCurrentTime().catch(()=>null);
-        if (typeof cur === 'number') {
-          const jitter = Math.random()*0.02;
-          await p.setCurrentTime(Math.max(0, cur + step + jitter)).catch(()=>{});
-        }
-        await p.play().catch(()=>{});
-      } catch {}
-    }
-    function withinWindow(now, start, win){ return (now - start) <= win; }
-
-    // Mobile stall-nudge settings (safe defaults)
-    const STALL_MS        = 2200;   // consider stalled if no progress for >2.2s
-    const COOLDOWN_MS     = 3000;   // min gap between actions for the same clip
-    const NUDGE_STEP_SECS = 0.08;   // tiny seek forward
-    const API_WINDOW_MS   = 30000;  // per-clip window
-    const MAX_API_PER_WIN = 1;      // one API recover per 30s per clip
-
     function registerMobilePlayer(ifr) {
       if (!window.Vimeo || !window.Vimeo.Player) return;
       try {
@@ -225,7 +178,7 @@
       } catch {}
     }
 
-    async function tick() {
+    function tick() {
       if (!registry.length) return;
       // Rank by distance to viewport center
       const ranked = registry.filter(r => r.el && r.el.isConnected)
@@ -243,63 +196,16 @@
         if (activeSet.has(r)) ensurePlaying(r);
         else ensurePaused(r);
       }
-
-      // Integrated stall-nudge for active iframes
-      if (isSmall && window.__STALL_NUDGE_ENABLED) {
-        const now = performance.now();
-        const activeIframes = actives.map(r => r.el).filter(el => el);
-        
-        for (const ifr of activeIframes) {
-          if (!ifr || !ifr.isConnected) continue;
-          const rec = regFor(ifr);
-          if (!rec.player) continue;
-
-          // respect per-clip cooldown
-          if (now - rec.lastActionAt < COOLDOWN_MS) continue;
-
-          const sinceProg = now - (rec.lastUpdateAt || 0);
-          const started   = !!rec.firstUpdateAt;
-
-          // Light keep-alive: always request play on actives
-          await apiPlay(rec.player);
-
-          // If started and appears stalled, escalate gently
-          if (started && sinceProg > STALL_MS) {
-            rec.lastActionAt = now;
-
-            // 1) small forward nudge after a short wait if still stalled
-            setTimeout(async () => {
-              const since = performance.now() - (rec.lastUpdateAt || 0);
-              if (since > STALL_MS) {
-                await nudgeForward(rec.player, NUDGE_STEP_SECS);
-              }
-            }, 500);
-
-            // 2) limited API recover on a later pass if still stalled
-            setTimeout(async () => {
-              const now2 = performance.now();
-              const since2 = now2 - (rec.lastUpdateAt || 0);
-              if (since2 > STALL_MS * 2) {
-                if (now2 - rec.apiWindowStart > API_WINDOW_MS) { rec.apiWindowStart = now2; rec.apiCount = 0; }
-                if (rec.apiCount < MAX_API_PER_WIN) {
-                  await apiPlay(rec.player);
-                  rec.apiCount++;
-                }
-              }
-            }, 1000);
-          }
-        }
-      }
     }
 
-    const ORCH_ID = setInterval(tick, TICK_MS);
+    const id = setInterval(tick, TICK_MS);
     window.addEventListener('scroll', () => tick(), { passive: true });
     window.addEventListener('resize', () => tick());
     window.addEventListener('load', () => tick());
     tick();
 
     window.__mobOrchestrator = {
-      stop() { clearInterval(ORCH_ID); }
+      stop() { clearInterval(id); }
     };
 
     // Console diagnostics helper

@@ -1,0 +1,148 @@
+Prompt — “Integrate stall-nudge into orchestrator (mobile only) + kill switch + rollback”
+Objective
+- Keep desktop code unchanged.
+- KEEP the current mobile orchestrator (the loop that picks ~4–5 active clips).
+- Add a lean stall-nudge INSIDE the orchestrator tick (no new intervals).
+- Provide a kill switch + simple rollback.
+
+Files
+- /assets/js/main.js
+- /index.html (cache-buster only)
+
+Steps
+
+1) BACKUP
+- Duplicate /assets/js/main.js → /assets/js/main.backup.before-stallnudge.js
+
+2) TOP OF main.js (after 'use strict'):
+- Ensure device flag and add a kill switch (default ON):
+  const isSmall = window.matchMedia('(max-width: 768px)').matches;
+  window.__STALL_NUDGE_ENABLED ??= true;
+
+3) FIND the MOBILE orchestrator code.
+- Ensure orchestrator is a singleton:
+  window.__mobOrchestrator?.stop?.();
+  // ... create the orchestrator interval, store its id in ORCH_ID ...
+  window.__mobOrchestrator = { stop(){ clearInterval(ORCH_ID); } };
+
+4) JUST ABOVE the orchestrator tick function, add these helpers and a tiny per-iframe registry:
+
+// Registry of progress per active iframe
+const __mobReg = new WeakMap(); // iframe -> record
+
+function regFor(ifr){
+  let rec = __mobReg.get(ifr);
+  if (!rec) {
+    rec = {
+      player: null,
+      firstUpdateAt: 0,
+      lastUpdateAt: 0,
+      lastActionAt: 0,
+      apiCount: 0,
+      apiWindowStart: performance.now()
+    };
+    try {
+      rec.player = new Vimeo.Player(ifr);
+      rec.player.on('timeupdate', () => {
+        rec.firstUpdateAt ||= performance.now();
+        rec.lastUpdateAt = performance.now();
+      });
+    } catch(_) {}
+    __mobReg.set(ifr, rec);
+  }
+  return rec;
+}
+
+async function apiPlay(p){ try { await p.play().catch(()=>{}); } catch {} }
+async function nudgeForward(p, step){
+  try {
+    const cur = await p.getCurrentTime().catch(()=>null);
+    if (typeof cur === 'number') {
+      const jitter = Math.random()*0.02;
+      await p.setCurrentTime(Math.max(0, cur + step + jitter)).catch(()=>{});
+    }
+    await p.play().catch(()=>{});
+  } catch {}
+}
+function withinWindow(now, start, win){ return (now - start) <= win; }
+
+5) DEFINE the nudge tunables near the orchestrator code (constants ONLY; do not start a new interval):
+
+// Mobile stall-nudge settings (safe defaults)
+const STALL_MS        = 2200;   // consider stalled if no progress for >2.2s
+const COOLDOWN_MS     = 3000;   // min gap between actions for the same clip
+const NUDGE_STEP_SECS = 0.08;   // tiny seek forward
+const API_WINDOW_MS   = 30000;  // per-clip window
+const MAX_API_PER_WIN = 1;      // one API recover per 30s per clip
+
+6) INSIDE THE ORCHESTRATOR TICK:
+- You already compute `activeIframes` (the ~4–5 nearest) and ask them to play/pause.
+- Immediately AFTER you decide the active set and BEFORE the tick returns,
+  add this block (do NOT create a new setInterval):
+
+if (isSmall && window.__STALL_NUDGE_ENABLED) {
+  const now = performance.now();
+  for (const ifr of activeIframes) {
+    if (!ifr || !ifr.isConnected) continue;
+    const rec = regFor(ifr);
+    if (!rec.player) continue;
+
+    // respect per-clip cooldown
+    if (now - rec.lastActionAt < COOLDOWN_MS) continue;
+
+    const sinceProg = now - (rec.lastUpdateAt || 0);
+    const started   = !!rec.firstUpdateAt;
+
+    // Light keep-alive: always request play on actives
+    await apiPlay(rec.player);
+
+    // If started and appears stalled, escalate gently
+    if (started && sinceProg > STALL_MS) {
+      rec.lastActionAt = now;
+
+      // 1) small forward nudge after a short wait if still stalled
+      setTimeout(async () => {
+        const since = performance.now() - (rec.lastUpdateAt || 0);
+        if (since > STALL_MS) {
+          await nudgeForward(rec.player, NUDGE_STEP_SECS);
+        }
+      }, 500);
+
+      // 2) limited API recover on a later pass if still stalled
+      setTimeout(async () => {
+        const now2 = performance.now();
+        const since2 = now2 - (rec.lastUpdateAt || 0);
+        if (since2 > STALL_MS * 2) {
+          if (now2 - rec.apiWindowStart > API_WINDOW_MS) { rec.apiWindowStart = now2; rec.apiCount = 0; }
+          if (rec.apiCount < MAX_API_PER_WIN) {
+            await apiPlay(rec.player);
+            rec.apiCount++;
+          }
+        }
+      }, 1000);
+    }
+  }
+}
+
+7) DO NOT add any new global timers. Do NOT touch desktop code.
+
+8) In /index.html, bump the cache-buster on main.js (e.g., ?v=20 → ?v=21).
+
+9) VALIDATION (external mobile preview):
+- Site loads and scrolls smoothly.
+- ~4–5 visible clips play (orchestrator behavior unchanged).
+- If an active clip freezes, it should resume within ~1–2s.
+- No extra intervals created (only the orchestrator interval exists).
+
+10) KILL SWITCH (runtime disable if this feels worse):
+- In the mobile console:
+    window.__STALL_NUDGE_ENABLED = false;
+    // wait a moment or refresh
+- Or set the flag to false near the top of main.js and reload.
+
+Rollback
+- To fully revert: restore /assets/js/main.backup.before-stallnudge.js to /assets/js/main.js, bump cache-buster, and reload.
+
+Reply only with:
+"STEP DONE — orchestrator-integrated stall-nudge added (mobile only) + kill switch"
+and list files touched.
