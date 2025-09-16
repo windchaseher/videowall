@@ -3,6 +3,7 @@
 
   const isSmall = window.matchMedia('(max-width: 768px)').matches;
   window.__BLACKGUARD_ENABLED ??= true; // kill switch
+  window.__STALLGUARD_ENABLED ??= true; // kill switch
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -507,6 +508,133 @@
       });
       const out = { total, alive, black };
       console.log('BlackGuard', out);
+      return out;
+    };
+  }
+
+  // StallGuard: Detect and revive clips that started but later freeze (mobile only)
+  if (isSmall && window.__STALLGUARD_ENABLED) {
+    // Stop any prior instance (hot reload safety)
+    if (window.__stallGuard && typeof window.__stallGuard.stop === 'function') {
+      window.__stallGuard.stop();
+    }
+
+    // Tunables (safe defaults)
+    const TICK_MS   = 1200;  // sweep cadence
+    const STALL_MS  = 2200;  // no progress for >2.2s => stalled
+    const COOLDOWN  = 3000;  // min time between actions per clip
+    const STEP      = 0.08;  // small seek forward
+    const MAX_API_PER_30S = 1;  // api-recover at most once per 30s
+    const API_WINDOW_MS   = 30000;
+    const NEAR_PX = 1800;   // only help clips near viewport
+
+    function distToCenter(el) {
+      const r = el.getBoundingClientRect();
+      const c = r.top + r.height / 2;
+      return Math.abs(c - window.innerHeight / 2);
+    }
+
+    // Track last progress + last actions per iframe
+    const seen = new WeakMap(); // iframe -> { lastUpdate, lastNudge, lastApi, apiCountWindowStart }
+
+    function attachProgressTracker(ifr) {
+      let s = seen.get(ifr);
+      if (!s) {
+        s = { lastUpdate: performance.now(), lastNudge: 0, lastApi: 0, apiCountWindowStart: performance.now(), apiCount: 0 };
+        seen.set(ifr, s);
+        try {
+          const p = new Vimeo.Player(ifr);
+          p.on('timeupdate', () => { s.lastUpdate = performance.now(); });
+        } catch {}
+      }
+      return s;
+    }
+
+    async function nudgeForward(p) {
+      try {
+        const cur = await p.getCurrentTime().catch(()=>null);
+        if (typeof cur === 'number') {
+          const jitter = Math.random() * 0.02;
+          await p.setCurrentTime(Math.max(0, cur + STEP + jitter)).catch(()=>{});
+        }
+        await p.play().catch(()=>{});
+      } catch {}
+    }
+
+    async function apiRecoverLimited(ifr) {
+      const s = seen.get(ifr) || attachProgressTracker(ifr);
+      const now = performance.now();
+      // reset count window if elapsed
+      if (now - s.apiCountWindowStart > API_WINDOW_MS) {
+        s.apiCountWindowStart = now; s.apiCount = 0;
+      }
+      if (s.apiCount >= MAX_API_PER_30S) return false;
+      try {
+        const p = new Vimeo.Player(ifr);
+        await p.play().catch(()=>{});
+        s.lastApi = now; s.apiCount++;
+        return true;
+      } catch { return false; }
+    }
+
+    async function tick() {
+      const ifrs = document.querySelectorAll('.frame iframe');
+      const now = performance.now();
+
+      for (const ifr of ifrs) {
+        // Only consider iframes that have already produced timeupdate (BlackGuard handles never-started)
+        const s = attachProgressTracker(ifr);
+        const d = distToCenter(ifr);
+        if (d > NEAR_PX) continue; // only help nearby clips
+
+        const stalled = (now - s.lastUpdate) > STALL_MS;
+        if (!stalled) continue;
+
+        // Respect per-clip cooldown
+        if (now - s.lastNudge < COOLDOWN) continue;
+
+        s.lastNudge = now;
+
+        // 1) gentle play() request
+        try { await new Vimeo.Player(ifr).play().catch(()=>{}); } catch {}
+
+        // 2) if still stalled next pass, apply forward nudge
+        setTimeout(async () => {
+          const s2 = seen.get(ifr) || s;
+          if ((performance.now() - s2.lastUpdate) > STALL_MS) {
+            await nudgeForward(new Vimeo.Player(ifr));
+          }
+        }, 400);
+
+        // 3) if STILL stalled on a later sweep, allow one API recover per 30s
+        setTimeout(async () => {
+          const s3 = seen.get(ifr) || s;
+          if ((performance.now() - s3.lastUpdate) > (STALL_MS * 2)) {
+            await apiRecoverLimited(ifr);
+          }
+        }, 1000);
+      }
+    }
+
+    const id = setInterval(tick, TICK_MS);
+    window.addEventListener('scroll', () => tick(), { passive: true });
+    window.addEventListener('resize', () => tick());
+    window.addEventListener('load', () => tick());
+
+    window.__stallGuard = { stop(){ clearInterval(id); } };
+
+    // Console helper: quick snapshot of stalled vs total near viewport
+    window.mobStall = () => {
+      const out = { near: 0, stalled: 0 };
+      document.querySelectorAll('.frame iframe').forEach(ifr => {
+        const s = seen.get(ifr);
+        if (!s) return;
+        if (distToCenter(ifr) <= NEAR_PX) {
+          out.near++;
+          if ((performance.now() - s.lastUpdate) > STALL_MS) out.stalled++;
+        }
+      });
+      console.log('StallGuard:', out);
       return out;
     };
   }
