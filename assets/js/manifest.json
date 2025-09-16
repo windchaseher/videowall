@@ -1,9 +1,9 @@
 {
   "clips": [
     { "title": "Hybrid — CU",          "embedUrl": "https://player.vimeo.com/video/1118451956", "parallax": 0.24, "overlap": -12 },
-    { "title": "Hybrid — Field",       "embedUrl": "https://player.vimeo.com/video/1118451957", "parallax": 0.32, "overlap": 0 },
-    { "title": "Hybrid — Sky",         "embedUrl": "https://player.vimeo.com/video/1118451963", "parallax": 0.28, "overlap": 0 },
-    { "title": "Hybrid — House",       "embedUrl": "https://player.vimeo.com/video/1118451960", "parallax": 0.36, "overlap": 0 },
+    { "title": "Hybrid — Field",       "embedUrl": "https://player.vimeo.com/video/1118451957", "parallax": 0.18, "overlap": 0 },
+    { "title": "Hybrid — Sky",         "embedUrl": "https://player.vimeo.com/video/1118451963", "parallax": 0.22, "overlap": 0 },
+    { "title": "Hybrid — House",       "embedUrl": "https://player.vimeo.com/video/1118451960", "parallax": 0.26, "overlap": 0 },
 
     { "title": "TEW — Twist",          "embedUrl": "https://player.vimeo.com/video/1118452534", "parallax": 0.22, "overlap": 0 },
     { "title": "TEW — CU",             "embedUrl": "https://player.vimeo.com/video/1118452525", "parallax": 0.34, "overlap": 0 },
