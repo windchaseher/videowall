@@ -5,9 +5,9 @@
   window.__BLACKGUARD_ENABLED ??= true; // kill switch
   window.__STALL_NUDGE_ENABLED ??= true;
   window.__OVERLAP_ENABLED ??= true;
-  window.__PARALLAX_GAIN ??= 2.4;   // increase to 3.0 later if you want more punch
   window.__PARALLAX_ENABLED ??= true;
-  window.__PARALLAX_SMOOTH ??= 0.24;   // safe bump (you can try 0.26 later)
+  window.__PARALLAX_GAIN ??= 2.0;
+  window.__PARALLAX_SMOOTH ??= 0.22;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -30,9 +30,10 @@
   }
 
   // Load manifest with cache-bust
+  const PROD_VERSION = '1.0.0';   // bump when you change manifest
   let manifest;
   try {
-    const res = await fetch(`./assets/js/manifest.json?ts=${Date.now()}`, { cache: 'no-store' });
+    const res = await fetch(`./assets/js/manifest.json?v=${PROD_VERSION}`, { cache: 'no-store' });
     manifest = await res.json();
     if (!manifest || !Array.isArray(manifest.clips)) return;
   } catch (_) { return; }
@@ -78,13 +79,6 @@
     return wrap;
   });
 
-  // Debug logging for overlap values
-  try {
-    const rows = Array.from(document.querySelectorAll('.clip')).map((el,i) => ({
-      idx: i, title: el.dataset.title || '', overlap: el.dataset.overlap
-    }));
-    console.table(rows);
-  } catch {}
 
   // MOBILE LOADER — simple, persistent, sequential (NO unmounting, NO lazy)
   if (isSmall) {
@@ -646,7 +640,6 @@
         if (rec.firstTimeUpdateAt) alive++; else black++;
       });
       const out = { total, alive, black };
-      console.log('BlackGuard', out);
       return out;
     };
   }
