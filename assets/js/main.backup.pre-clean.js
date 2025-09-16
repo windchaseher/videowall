@@ -3,6 +3,7 @@
 
   const isSmall = window.matchMedia('(max-width: 768px)').matches;
   window.__BLACKGUARD_ENABLED ??= true; // kill switch
+  window.__STALLGUARD_ENABLED = false;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -112,7 +113,7 @@
   // MOBILE PLAYBACK ORCHESTRATOR — small, reliable, single instance
   if (isSmall) {
     // Avoid duplicates if hot-reloaded
-    window.__mobOrchestrator?.stop?.();
+    window.__mobOrchestrator && window.__mobOrchestrator.stop && window.__mobOrchestrator.stop();
 
     const registry = []; // { el, player, lastTime, lastUpdate, ensuring, ready, lastPlayedAt }
     const NEAR_PX        = 2000;  // treat ± ~2.5 screens as "near"
@@ -134,15 +135,10 @@
           rec.lastUpdate = performance.now();
           rec.ready = true;
         });
-        // try to set lower quality for mobile (non-fatal if not supported)
-        if (isSmall && p.getQualities) {
-          p.getQualities().then(qs => {
-            if (Array.isArray(qs)) {
-              if (qs.includes('360p')) p.setQuality('360p').catch(()=>{});
-              else if (qs.includes('540p')) p.setQuality('540p').catch(()=>{});
-            }
-          }).catch(()=>{});
-        }
+        // try to set moderate quality if available (non-fatal if not supported)
+        p.getQualities && p.getQualities().then(qs => {
+          if (Array.isArray(qs) && qs.includes('540p')) { p.setQuality('540p').catch(()=>{}); }
+        }).catch(()=>{});
       } catch {}
     }
     // expose for the loader to call
@@ -380,7 +376,9 @@
   // BlackGuard: Detect and revive black (non-playing) iframes on mobile
   if (isSmall && window.__BLACKGUARD_ENABLED) {
     // Stop any prior instance (hot reload safety)
-    window.__blackGuard?.stop?.();
+    if (window.__blackGuard && typeof window.__blackGuard.stop === 'function') {
+      window.__blackGuard.stop();
+    }
 
     const BG = {
       recs: new Map(),            // iframe -> record

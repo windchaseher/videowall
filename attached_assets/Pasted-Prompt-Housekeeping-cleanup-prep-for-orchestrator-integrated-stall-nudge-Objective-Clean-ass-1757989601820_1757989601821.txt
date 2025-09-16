@@ -1,0 +1,88 @@
+Prompt — “Housekeeping cleanup (prep for orchestrator-integrated stall-nudge)”
+Objective: Clean /assets/js/main.js so only these remain on MOBILE:
+  • Current Orchestrator (play/pause logic you’re using now)
+  • BlackGuard (BLACK/never-started recovery)
+Desktop code must remain untouched.
+
+Steps:
+
+1) BACKUP
+- Duplicate /assets/js/main.js → /assets/js/main.backup.pre-clean.js
+
+2) REMOVE any legacy/experimental blocks (delete entire blocks if present):
+- Any “sliding window” code:
+  • variables: KEEP_BEHIND, KEEP_AHEAD, UNMOUNT_BEHIND, UNMOUNT_AHEAD, PREFETCH_AHEAD/PREFETCH_BEHIND, MAX_MOUNTED
+  • functions: nearestIndexToViewportCenter, unmountIframe, mountIframeEager (only if it was used by windowing), updateWindow
+  • timers/listeners tied to that windowing: setInterval(updateWindow,…), scroll/resize handlers for updateWindow
+- Any “StallGuard” block:
+  • Look for markers: __stallGuard, STALL_MS, COOLDOWN, STEP, window.__STALLGUARD_ENABLED
+  • Delete the entire `if (isSmall && window.__STALLGUARD_ENABLED) { ... }` section
+- Any earlier “watchdog” duplicates:
+  • Markers: FreezeGuard, MountGuard, players = [], registerPlayer for global (non-mobile) usage, __mobWatchdog, nudgeFrozenPlayers (if used as a global sweep)
+  • Delete those blocks ONLY if they’re separate mobile watchdog loops. Do NOT delete the Orchestrator or BlackGuard.
+- Any “orchestrator v1/v2” duplicates:
+  • Markers: window.__mobOrchestrator, ensurePaused, ensurePlaying, MAX_ACTIVE/NEAR_PX in multiple places
+  • Keep just ONE orchestrator implementation (the current working one). Remove older duplicates so only one setInterval remains.
+
+3) ENSURE SINGLETONS (prevent duplicates on hot-reload)
+- For Orchestrator:
+  • Before you create its interval, insert: `window.__mobOrchestrator?.stop?.();`
+  • Expose a stop handle: `window.__mobOrchestrator = { stop(){ clearInterval(ID_HERE); } };`
+- For BlackGuard:
+  • Before creating, insert: `window.__blackGuard?.stop?.();`
+  • Expose a stop handle: `window.__blackGuard = { stop(){ clearInterval(MAIN_ID); clearInterval(SECONDARY_ID_IF_ANY); } };`
+
+4) KILL SWITCHES (keep them but default to enabled)
+- Near top of file (after 'use strict'):
+  • `const isSmall = window.matchMedia('(max-width: 768px)').matches;`
+  • `window.__BLACKGUARD_ENABLED ??= true;`
+- Do NOT add StallGuard back. We are intentionally not using it.
+
+5) QUALITY CAP (mobile only, non-fatal)
+- In the code that instantiates Vimeo.Player for MOBILE (the one used by the orchestrator/BlackGuard), keep or add:
+if (isSmall && p.getQualities) {
+p.getQualities().then(qs => {
+if (Array.isArray(qs)) {
+if (qs.includes('360p')) p.setQuality('360p').catch(()=>{});
+else if (qs.includes('540p')) p.setQuality('540p').catch(()=>{});
+}
+}).catch(()=>{});
+}
+- Do not change desktop quality handling.
+
+6) PRECONNECTS (index.html)
+- In <head>, ensure (add if missing—otherwise leave as-is):
+<link rel="preconnect" href="https://player.vimeo.com" crossorigin>
+<link rel="preconnect" href="https://i.vimeocdn.com" crossorigin>
+<link rel="preconnect" href="https://f.vimeocdn.com" crossorigin>
+
+7) CACHE-BUST
+- In /index.html, bump the query on main.js (e.g., from ?v=12 to ?v=13).
+
+8) VALIDATION — search main.js and confirm:
+- MUST NOT CONTAIN (delete if found):
+• "__stallGuard"
+• "StallGuard"
+• "FreezeGuard"
+• "MountGuard"
+• "sliding window"
+• "unmountIframe("
+• "updateWindow("
+• "nearestIndexToViewportCenter("
+• "mountedSet"
+• "MAX_MOUNTED"
+- MUST CONTAIN (exactly one orchestrator interval):
+• "__mobOrchestrator"
+- MUST CONTAIN (exactly one BlackGuard block; mobile-only; with kill switch):
+• "__blackGuard"
+• "__BLACKGUARD_ENABLED"
+
+9) RUN & SMOKE TEST (external preview)
+- Page loads and scrolls on mobile.
+- Orchestrator still plays ~4–5 near clips (as before).
+- BlackGuard still flips “black/never-started” clips to alive within a few seconds.
+- No console errors about undefined functions from removed code.
+
+Reply only with:
+"STEP DONE — housekeeping complete (desktop unchanged; mobile = Orchestrator + BlackGuard only)"
+and list the files you touched.
