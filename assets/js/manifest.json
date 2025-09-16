@@ -1,7 +1,7 @@
 {
   "clips": [
     { "title": "Hybrid — CU",          "embedUrl": "https://player.vimeo.com/video/1118451956", "parallax": 0.24, "overlap": -12 },
-    { "title": "Hybrid — Field",       "embedUrl": "https://player.vimeo.com/video/1118451957", "parallax": 0.32, "overlap": -160 },
+    { "title": "Hybrid — Field",       "embedUrl": "https://player.vimeo.com/video/1118451957", "parallax": 0.32, "overlap": -400 },
     { "title": "Hybrid — Sky",         "embedUrl": "https://player.vimeo.com/video/1118451963", "parallax": 0.28, "overlap": -320 },
     { "title": "Hybrid — House",       "embedUrl": "https://player.vimeo.com/video/1118451960", "parallax": 0.36, "overlap": -480 },
 
