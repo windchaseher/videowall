@@ -134,12 +134,16 @@
           rec.lastUpdate = performance.now();
           rec.ready = true;
         });
-        // try to set lower quality for mobile (non-fatal if not supported)
         if (isSmall && p.getQualities) {
           p.getQualities().then(qs => {
             if (Array.isArray(qs)) {
-              if (qs.includes('360p')) p.setQuality('360p').catch(()=>{});
-              else if (qs.includes('540p')) p.setQuality('540p').catch(()=>{});
+              if (qs.includes('720p')) {
+                p.setQuality('720p').catch(()=>{});
+              } else if (qs.includes('540p')) {
+                p.setQuality('540p').catch(()=>{});
+              } else if (qs.includes('360p')) {
+                p.setQuality('360p').catch(()=>{});
+              }
             }
           }).catch(()=>{});
         }
