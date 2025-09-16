@@ -1,0 +1,67 @@
+Prompt — “Parallax gain & visibility boost (safe cap, same JSON controls)”
+Open /assets/js/main.js.
+
+1) Near the top (after 'use strict'), add a gain and a kill switch:
+
+window.__PARALLAX_GAIN ??= 2.4;   // increase to 3.0 later if you want more punch
+window.__PARALLAX_ENABLED ??= true;
+
+2) Find the parallax installer function (the one that adds the scroll/resize listeners and loops over '.clip').
+Replace ONLY the inner math that computes and applies the transform with this exact block:
+
+    const wh = window.innerHeight;
+    clips.forEach(wrap => {
+      if (!window.__PARALLAX_ENABLED) return;
+
+      // Per-clip speed from manifest (string -> number)
+      const speed = parseFloat(wrap.dataset.parallax || '0') || 0; // 0 = static
+      if (!speed) { 
+        // still ensure transform is stable to avoid flicker
+        return;
+      }
+
+      const rect = wrap.getBoundingClientRect();
+      // Distance of clip center from viewport center (px): positive if below center
+      const rel = (rect.top + rect.height / 2) - (wh / 2);
+
+      // Apply global gain so JSON values make a visible difference
+      const gain = window.__PARALLAX_GAIN || 1;
+
+      // Raw pixel offset; negative sign so positive 'rel' moves wrap up
+      let offsetPx = -(rel * speed * gain);
+
+      // Safety cap so it never looks jumpy on mobile (max 25vh)
+      const capPx = Math.max(60, Math.round(0.25 * wh)); // 25% of viewport height, min 60px
+      if (offsetPx > capPx) offsetPx = capPx;
+      if (offsetPx < -capPx) offsetPx = -capPx;
+
+      // Apply transform on the wrapper (parallax element)
+      // Round to 0.5px to keep GPU-friendly but stable
+      const rounded = Math.round(offsetPx * 2) / 2;
+      wrap.style.transform = `translate3d(0, ${rounded}px, 0)`;
+      wrap.style.willChange = 'transform';
+    });
+
+3) Do NOT change anything else (overlap wiring stays on the inner '.frame', watermark/audio unchanged).
+
+4) Save /assets/js/main.js.
+
+5) If your manifest fetch is not already cache-busted, update the fetch call for manifest:
+   Change:
+     fetch('assets/js/manifest.json')
+   To:
+     fetch('assets/js/manifest.json?v=' + Date.now())
+
+6) In /index.html, bump the main.js cache-buster (increment the ?v= number on the script tag) so this new logic loads.
+
+Validation:
+- Reload the external preview and scroll the section with 1D6S_FLOATER (parallax=0.35). The motion should now be clearly stronger than before.
+- If it’s still too subtle, increase the global gain at runtime from the console:
+    window.__PARALLAX_GAIN = 3.0;  location.reload();
+  (Or set it permanently near the top of main.js.)
+- If you need to compare quickly, disable parallax without touching JSON:
+    window.__PARALLAX_ENABLED = false; location.reload();
+
+Reply only with:
+"STEP DONE — parallax gain applied (global), JSON values now visibly stronger"
+and list files touched.

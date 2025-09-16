@@ -5,6 +5,8 @@
   window.__BLACKGUARD_ENABLED ??= true; // kill switch
   window.__STALL_NUDGE_ENABLED ??= true;
   window.__OVERLAP_ENABLED ??= true;
+  window.__PARALLAX_GAIN ??= 2.4;   // increase to 3.0 later if you want more punch
+  window.__PARALLAX_ENABLED ??= true;
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -441,15 +443,38 @@
   // Subtle per-clip parallax
   let ticking = false;
   function applyParallax() {
-    const viewportCenter = window.innerHeight / 2;
-    // Use a cached NodeList each frame to avoid layout thrash
-    document.querySelectorAll('.clip').forEach(el => {
-      const s = parseFloat(el.dataset.speed || '0') || 0;
-      if (!s) { el.style.transform = ''; return; }
-      const rect = el.getBoundingClientRect();
-      const elCenter = rect.top + rect.height / 2;
-      const delta = viewportCenter - elCenter; // positive when element is below center
-      el.style.transform = `translateY(${delta * s}px)`;
+    const wh = window.innerHeight;
+    const clips = document.querySelectorAll('.clip');
+    clips.forEach(wrap => {
+      if (!window.__PARALLAX_ENABLED) return;
+
+      // Per-clip speed from manifest (string -> number)
+      const speed = parseFloat(wrap.dataset.speed || '0') || 0; // 0 = static
+      if (!speed) { 
+        // still ensure transform is stable to avoid flicker
+        return;
+      }
+
+      const rect = wrap.getBoundingClientRect();
+      // Distance of clip center from viewport center (px): positive if below center
+      const rel = (rect.top + rect.height / 2) - (wh / 2);
+
+      // Apply global gain so JSON values make a visible difference
+      const gain = window.__PARALLAX_GAIN || 1;
+
+      // Raw pixel offset; negative sign so positive 'rel' moves wrap up
+      let offsetPx = -(rel * speed * gain);
+
+      // Safety cap so it never looks jumpy on mobile (max 25vh)
+      const capPx = Math.max(60, Math.round(0.25 * wh)); // 25% of viewport height, min 60px
+      if (offsetPx > capPx) offsetPx = capPx;
+      if (offsetPx < -capPx) offsetPx = -capPx;
+
+      // Apply transform on the wrapper (parallax element)
+      // Round to 0.5px to keep GPU-friendly but stable
+      const rounded = Math.round(offsetPx * 2) / 2;
+      wrap.style.transform = `translate3d(0, ${rounded}px, 0)`;
+      wrap.style.willChange = 'transform';
     });
     ticking = false;
   }
