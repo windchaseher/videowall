@@ -134,19 +134,6 @@
           rec.lastUpdate = performance.now();
           rec.ready = true;
         });
-        if (isSmall && p.getQualities) {
-          p.getQualities().then(qs => {
-            if (Array.isArray(qs)) {
-              if (qs.includes('720p')) {
-                p.setQuality('720p').catch(()=>{});
-              } else if (qs.includes('540p')) {
-                p.setQuality('540p').catch(()=>{});
-              } else if (qs.includes('360p')) {
-                p.setQuality('360p').catch(()=>{});
-              }
-            }
-          }).catch(()=>{});
-        }
       } catch {}
     }
     // expose for the loader to call
