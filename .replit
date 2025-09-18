@@ -38,6 +38,10 @@ externalPort = 3001
 localPort = 45169
 externalPort = 3000
 
+[[ports]]
+localPort = 46181
+externalPort = 3002
+
 [deployment]
 deploymentTarget = "static"
 publicDir = "."
