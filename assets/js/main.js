@@ -7,7 +7,11 @@
   window.__OVERLAP_ENABLED ??= true;
   window.__PARALLAX_ENABLED ??= true;
   window.__PARALLAX_GAIN ??= 2.0;
-  window.__PARALLAX_SMOOTH ??= 0.22;
+  // Global parallax smoothing
+  const LERP_DESKTOP = 0.12;   // previously 0.10
+  const LERP_MOBILE  = 0.16;   // previously 0.14
+  // Cap how far the eased value can move per frame (in pixels)
+  const MAX_STEP_PX  = 60;     // previously 80
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -469,8 +473,12 @@
       // Round to 0.5px to keep GPU-friendly but stable
       const target = Math.round(offsetPx * 2) / 2;
       const prev   = wrap.__parallaxY ?? target;
-      const alpha  = window.__PARALLAX_SMOOTH || 0.18;
-      const next   = prev + (target - prev) * alpha;
+      const lerp = isSmall ? LERP_MOBILE : LERP_DESKTOP;
+      // compute next = current + (target - current) * lerp
+      // then clamp the step to ±MAX_STEP_PX before assigning:
+      const step = (target - prev) * lerp;
+      const clamped = Math.max(-MAX_STEP_PX, Math.min(MAX_STEP_PX, step));
+      const next = prev + clamped;
 
       wrap.__parallaxY = next;
       wrap.style.transform = `translate3d(0, ${next}px, 0)`;
