@@ -6,12 +6,6 @@
   window.__STALL_NUDGE_ENABLED ??= true;
   window.__OVERLAP_ENABLED ??= true;
   window.__PARALLAX_ENABLED ??= true;
-  window.__PARALLAX_GAIN ??= 2.0;
-  // Global parallax smoothing
-  const LERP_DESKTOP = 0.12;   // previously 0.10
-  const LERP_MOBILE  = 0.16;   // previously 0.14
-  // Cap how far the eased value can move per frame (in pixels)
-  const MAX_STEP_PX  = 60;     // previously 80
   const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Helper to enforce Vimeo params while preserving any existing ones
@@ -34,13 +28,20 @@
   }
 
   // Load manifest with cache-bust
-  const PROD_VERSION = '1.0.0';   // bump when you change manifest
   let manifest;
   try {
-    const res = await fetch(`./assets/js/manifest.json?v=${PROD_VERSION}`, { cache: 'no-store' });
+    const res = await fetch('./assets/js/manifest.json', { cache: 'no-store' });
     manifest = await res.json();
     if (!manifest || !Array.isArray(manifest.clips)) return;
   } catch (_) { return; }
+
+  // Extract configuration from manifest with fallbacks
+  const config = {
+    parallaxGain: manifest.parallaxGain || 2.0,
+    desktopSmooth: manifest.desktopSmooth || 0.12,
+    mobileSmooth: manifest.mobileSmooth || 0.16,
+    maxStepPx: manifest.maxStepPx || 60
+  };
 
   const reel = document.getElementById('reel');
   reel.innerHTML = '';
@@ -439,9 +440,14 @@
     }, desktopConfig.finalSweepMs);
   }
 
-  // Subtle per-clip parallax
+  // Subtle per-clip parallax with dt-normalized timing
   let ticking = false;
-  function applyParallax() {
+  let lastTime = performance.now();
+  function applyParallax(currentTime = performance.now()) {
+    const dt = Math.min(currentTime - lastTime, 33.33); // Cap at ~30fps minimum
+    lastTime = currentTime;
+    const dtNorm = dt / 16.67; // Normalize to 60fps (16.67ms per frame)
+    
     const wh = window.innerHeight;
     const clips = document.querySelectorAll('.clip');
     clips.forEach(wrap => {
@@ -458,8 +464,8 @@
       // Distance of clip center from viewport center (px): positive if below center
       const rel = (rect.top + rect.height / 2) - (wh / 2);
 
-      // Apply global gain so JSON values make a visible difference
-      const gain = window.__PARALLAX_GAIN || 1;
+      // Apply global gain from manifest
+      const gain = config.parallaxGain;
 
       // Raw pixel offset; negative sign so positive 'rel' moves wrap up
       let offsetPx = -(rel * speed * gain);
@@ -473,11 +479,13 @@
       // Round to 0.5px to keep GPU-friendly but stable
       const target = Math.round(offsetPx * 2) / 2;
       const prev   = wrap.__parallaxY ?? target;
-      const lerp = isSmall ? LERP_MOBILE : LERP_DESKTOP;
-      // compute next = current + (target - current) * lerp
-      // then clamp the step to ±MAX_STEP_PX before assigning:
-      const step = (target - prev) * lerp;
-      const clamped = Math.max(-MAX_STEP_PX, Math.min(MAX_STEP_PX, step));
+      const smoothing = isSmall ? config.mobileSmooth : config.desktopSmooth;
+      // Normalize smoothing with delta time for consistent animation across refresh rates
+      const lerpFactor = Math.min(1, smoothing * dtNorm);
+      // compute next = current + (target - current) * lerpFactor
+      // then clamp the step to ±maxStepPx before assigning:
+      const step = (target - prev) * lerpFactor;
+      const clamped = Math.max(-config.maxStepPx, Math.min(config.maxStepPx, step));
       const next = prev + clamped;
 
       wrap.__parallaxY = next;

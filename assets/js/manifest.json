@@ -1,5 +1,9 @@
 {
-  "rev": 3,
+  "rev": 4,
+  "parallaxGain": 2.0,
+  "desktopSmooth": 0.12,
+  "mobileSmooth": 0.16,
+  "maxStepPx": 60,
   "clips": [
     { "title": "Hybrid — CU",          "embedUrl": "https://player.vimeo.com/video/1118451956", "parallax": 0.24, "overlap": -12 },
     { "title": "Hybrid — Field",       "embedUrl": "https://player.vimeo.com/video/1118451957", "parallax": 0.28, "overlap": 0 },
