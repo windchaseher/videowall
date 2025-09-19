@@ -40,7 +40,8 @@
     parallaxGain: manifest.parallaxGain || 2.0,
     desktopSmooth: manifest.desktopSmooth || 0.12,
     mobileSmooth: manifest.mobileSmooth || 0.16,
-    maxStepPx: manifest.maxStepPx || 60
+    maxStepPx: manifest.maxStepPx || 60,
+    mobileMaxActive: manifest.mobileMaxActive || 5
   };
 
   const reel = document.getElementById('reel');
@@ -51,10 +52,16 @@
     const wrap = document.createElement('section');
     wrap.className = 'clip';
     
-    // Read overlap (pixels) from manifest; store for debug
+    // Read overlap (pixels) and other per-clip settings from manifest
     const ov = (typeof c.overlap === 'number') ? c.overlap : parseFloat(c.overlap || '0') || 0;
+    const offsetPx = (typeof c.offsetPx === 'number') ? c.offsetPx : parseFloat(c.offsetPx || '0') || 0;
+    const overlapPx = (typeof c.overlapPx === 'number') ? c.overlapPx : parseFloat(c.overlapPx || '0') || ov; // support both names
+    const stabilizePx = !isSmall && (typeof c.stabilizePx === 'number') ? c.stabilizePx : parseFloat(c.stabilizePx || '0') || 0;
+    
     wrap.dataset.title = c.title || '';
-    wrap.dataset.overlap = String(ov);
+    wrap.dataset.overlap = String(overlapPx);
+    wrap.dataset.offsetPx = String(offsetPx);
+    wrap.dataset.stabilizePx = String(stabilizePx);
     
     wrap.style.marginBottom = '4px';
     
@@ -70,11 +77,12 @@
     frame.style.background = '#000';
     
     // Apply overlap to the INNER frame (no conflict with parallax on wrapper)
-    if (window.__OVERLAP_ENABLED) {
-      // Negative ov pulls the frame upward; positive pushes it down
+    if (window.__OVERLAP_ENABLED && (overlapPx !== 0 || offsetPx !== 0)) {
+      // Combine overlap and offset values
+      const totalOffset = overlapPx + offsetPx;
       const prev = frame.style.transform || '';
       // Ensure we don't overwrite any existing frame transform (rare); append translate
-      frame.style.transform = `${prev ? prev + ' ' : ''}translate3d(0, ${ov}px, 0)`;
+      frame.style.transform = `${prev ? prev + ' ' : ''}translate3d(0, ${totalOffset}px, 0)`;
       frame.style.willChange = 'transform';
     }
     
@@ -141,7 +149,7 @@
     const registry = []; // { el, player, lastTime, lastUpdate, ensuring, ready, lastPlayedAt }
     const NEAR_PX        = 2000;  // treat ± ~2.5 screens as "near"
     const FAR_PX         = 3400;  // only pause if well outside this
-    const MAX_ACTIVE     = 5;     // try current + 2 above + 2 below
+    const MAX_ACTIVE     = config.mobileMaxActive; // try current + 2 above + 2 below
     const TICK_MS        = 1100;  // slower cadence = less churn
     const RESUME_CHECK_MS= 600;
     const NUDGE_SECS     = 0.10;  // slightly stronger resume nudge
@@ -470,8 +478,9 @@
       // Raw pixel offset; negative sign so positive 'rel' moves wrap up
       let offsetPx = -(rel * speed * gain);
 
-      // Safety cap so it never looks jumpy on mobile (max 25vh)
-      const capPx = Math.max(60, Math.round(0.25 * wh)); // 25% of viewport height, min 60px
+      // Safety cap with per-clip stabilizePx override for desktop
+      const stabilize = !isSmall ? parseFloat(wrap.dataset.stabilizePx || '0') || 0 : 0;
+      const capPx = stabilize > 0 ? stabilize : Math.max(60, Math.round(0.25 * wh)); // use stabilizePx or default
       if (offsetPx > capPx) offsetPx = capPx;
       if (offsetPx < -capPx) offsetPx = -capPx;
 
