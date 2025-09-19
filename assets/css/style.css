@@ -1,6 +1,12 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: #000; overflow-x: hidden; }
 #reel { display: block; width: 100vw; margin: 0; padding: 0; }
+/* Permanently disable clicks/drag/select on videos/iframes */
+.clip, .videoWrapper, iframe {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 .clip { display: block; position: relative; will-change: transform; margin: 0; }
 .clip .frame {
   position: relative;
@@ -13,6 +19,15 @@ html, body { margin: 0; padding: 0; background: #000; overflow-x: hidden; }
   position: absolute; inset: 0; width: 100%; height: 100%;
   border: 0;
   pointer-events: none;       /* no HUD/controls interaction */
+}
+/* Fullscreen transparent overlay that captures ONLY the first interaction */
+#clickCatcher {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;         /* above everything for one interaction */
+  background: transparent;
+  cursor: pointer;
+  /* do NOT set pointer-events:none; this must receive the first click/tap */
 }
 .watermark{
   position: fixed;

@@ -512,9 +512,28 @@
     catch { try { a.load(); setTimeout(() => a.play().catch(()=>{}), 60); } catch {}
     }
   }
+  function startBackgroundAudio() {
+    startAudioOnce();
+  }
   ['click','pointerdown','touchstart','keydown'].forEach(ev =>
     window.addEventListener(ev, startAudioOnce, { once: true, passive: true })
   );
+
+  // Initialize audio unlock overlay
+  (function initAudioUnlock(){
+    const cc = document.getElementById('clickCatcher');
+    if (!cc) return;
+    const unlock = () => {
+      try { if (typeof startBackgroundAudio === 'function') startBackgroundAudio(); } catch(e){}
+      cc.remove();  // permanently remove overlay after the first interaction
+    };
+    // Capture the first interaction only; do not preventDefault so scrolling stays normal
+    cc.addEventListener('click',      unlock, { once: true });
+    cc.addEventListener('touchstart', unlock, { once: true, passive: true });
+    cc.addEventListener('keydown',    (e) => { if (e.key === 'Enter' || e.key === ' ') unlock(); }, { once: true });
+    // Optional accessibility focus for keyboard users:
+    cc.tabIndex = 0;
+  })();
 
   // BlackGuard: Detect and revive black (non-playing) iframes on mobile
   if (isSmall && window.__BLACKGUARD_ENABLED) {

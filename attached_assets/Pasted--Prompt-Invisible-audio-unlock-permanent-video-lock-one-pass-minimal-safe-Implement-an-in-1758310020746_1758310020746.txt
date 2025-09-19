@@ -1,0 +1,60 @@
+✅ Prompt — “Invisible audio unlock + permanent video lock (one pass, minimal, safe)”
+Implement an invisible, one-time audio unlock overlay AND a permanent video interaction lock, without changing any parallax, layout, loading, or performance logic.
+
+Do ONLY the following:
+
+FILES TO EDIT:
+- index.html
+- assets/css/style.css           (or the main stylesheet in /assets/css)
+- assets/js/main.js              (where startBackgroundAudio() is defined/called)
+- assets/js/manifest.json        (rev bump only)
+
+1) index.html — add a fullscreen invisible overlay near the top of <body>:
+   <div id="clickCatcher" aria-hidden="true"></div>
+
+2) assets/css/style.css — harden player elements and define the overlay:
+   /* Permanently disable clicks/drag/select on videos/iframes */
+   .clip, .videoWrapper, iframe {
+     pointer-events: none;
+     user-select: none;
+     -webkit-user-select: none;
+   }
+   /* Fullscreen transparent overlay that captures ONLY the first interaction */
+   #clickCatcher {
+     position: fixed;
+     inset: 0;
+     z-index: 999999;         /* above everything for one interaction */
+     background: transparent;
+     cursor: pointer;
+     /* do NOT set pointer-events:none; this must receive the first click/tap */
+   }
+
+3) assets/js/main.js — wire the first user interaction to start audio, then remove overlay:
+   (function initAudioUnlock(){
+     const cc = document.getElementById('clickCatcher');
+     if (!cc) return;
+     const unlock = () => {
+       try { if (typeof startBackgroundAudio === 'function') startBackgroundAudio(); } catch(e){}
+       cc.remove();  // permanently remove overlay after the first interaction
+     };
+     // Capture the first interaction only; do not preventDefault so scrolling stays normal
+     cc.addEventListener('click',      unlock, { once: true });
+     cc.addEventListener('touchstart', unlock, { once: true, passive: true });
+     cc.addEventListener('keydown',    (e) => { if (e.key === 'Enter' || e.key === ' ') unlock(); }, { once: true });
+     // Optional accessibility focus for keyboard users:
+     cc.tabIndex = 0;
+   })();
+
+   // Do NOT modify any other logic: keep parallax, smoothing, loading, watermark, Vimeo, etc. exactly as-is.
+
+4) assets/js/manifest.json — increment the top-level "rev" by +1 (cache-bust).
+
+5) Ensure index.html already appends ?rev=<manifest.rev> to CSS/JS includes.
+   If not present, append ?rev=<rev> to the stylesheet and main.js script tags now.
+   Do not add new libraries or tooling.
+
+AFTER CHANGES:
+- Build & deploy.
+
+REPLY EXACTLY:
+"STEP DONE — invisible audio unlock + permanent video lock added; manifest.rev++ (files: index.html, assets/css/style.css, assets/js/main.js, assets/js/manifest.json)."
